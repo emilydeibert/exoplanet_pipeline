@@ -1,4 +1,4 @@
-git clone https://github.com/YOUR_USERNAME/exoplanet_pipeline.git
+git clone https://github.com/emilydeibert/exoplanet_pipeline.git
 
 cd exoplanet_pipeline
 
