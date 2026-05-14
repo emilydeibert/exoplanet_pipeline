@@ -14,7 +14,7 @@ __pycache__/
 src/exopipe/crosscorrelation.py
 src/exopipe/reduction.py
 src/exopipe/sysrem.py
-src/exopipe/sandbox.py
+src/exopipe/sandbox/
 
 src/exopipe/cli/reduceData.py
 src/exopipe/cli/sysremDaya.py
