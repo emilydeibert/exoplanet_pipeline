@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "exopipe"
+version = "0.1.0"
+
+[tools.setuptools]
+package-dir = {"" = "src"}
+
+[tools.setuptools.packages.find]
+where = ["src"]

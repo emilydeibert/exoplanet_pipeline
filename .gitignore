@@ -1,0 +1,23 @@
+# Python packaging
+*.egg-info/
+build/
+dist/
+
+# Python cache
+__pycache__/
+*.pyc
+
+
+# macOS
+.DS_Store
+
+src/exopipe/crosscorrelation.py
+src/exopipe/reduction.py
+src/exopipe/sysrem.py
+src/exopipe/sandbox.py
+
+src/exopipe/cli/reduceData.py
+src/exopipe/cli/sysremDaya.py
+src/exopipe/cli/correlateModel.py
+src/exopipe/cli/correlateModel_iterations.py
+src/exopipe/cli/injectAndCorrelateData.py
