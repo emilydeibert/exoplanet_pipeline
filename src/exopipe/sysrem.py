@@ -9,12 +9,12 @@ _LOG10 = np.log(10.0)
 MAG_ERR_FACTOR = 2.5 / _LOG10  # 2.5 / ln(10)
 
 # ---------------------------------------------------------------------
-# Magnitude conversion (vectorized, safe)
+# Magnitude conversion
 # ---------------------------------------------------------------------
 
 def flux_to_mag(flux, err, min_flux=1e-12):
     """
-    Convert flux to magnitudes safely (vectorized) and propagate errors.
+    Convert flux to magnitudes and propagate errors.
 
     flux, err: arrays of same shape (n_exp, n_pix) or (n_ord, n_exp, n_pix)
     Returns:
@@ -57,7 +57,7 @@ def remove_pixel_mean_weighted(mag, magerr):
 
 
 # ---------------------------------------------------------------------
-# Core SYSREM updates (weighted ALS rank-1 fit)
+# Core SYSREM 
 # ---------------------------------------------------------------------
 
 def _compute_c_i(r_ij, a_j, w_ij):
@@ -107,7 +107,7 @@ def sysrem_one(mag, magerr, airmass, tol=1e-4, max_iter=50,
         - ('percentile', p): set floor to percentile p of finite magerr
       weight_clip_quantile:
         - None: no clip
-        - float in (0,1): clip weights above that quantile (prevents domination)
+        - float in (0,1): clip weights above that quantile
 
     Returns:
       resid: (n_exp, n_pix) after removing one SYSREM component
@@ -146,7 +146,7 @@ def sysrem_one(mag, magerr, airmass, tol=1e-4, max_iter=50,
             wcap = np.quantile(wvals, q)
             w = np.minimum(w, wcap)
 
-    # Mean-center per pixel with weights (important!)
+    # Mean-center per pixel with weights
     resid = remove_pixel_mean_weighted(mag, sigma)
 
     # Work in SYSREM convention: r_ij is (pix, exp)
@@ -155,7 +155,7 @@ def sysrem_one(mag, magerr, airmass, tol=1e-4, max_iter=50,
 
     # Initialize
     a_j = airmass.copy()
-    # make sure it's finite-ish
+    # make sure it's finite
     a_j = np.where(np.isfinite(a_j), a_j, 0.0)
 
     c_i = np.ones(r_ij.shape[0], dtype=np.float64)
