@@ -3,6 +3,7 @@ from astropy import units as u
 from scipy import interpolate
 import importlib.util
 import numpy as np 
+import argparse
 import sys
 
 from exopipe import crosscorrelation as cc
@@ -10,18 +11,7 @@ from exopipe import tools
 
 from pathlib import Path
 
-project_path = Path(sys.argv[1])
-
-config_file = project_path / "config.py"
-spec = importlib.util.spec_from_file_location("config", str(config_file))
-config = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(config)
-
-params_file = project_path / "parameters.py"
-spec = importlib.util.spec_from_file_location("parameters", str(params_file))
-params = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(params)
-
+#project_path = Path(sys.argv[1])
 
 def correlateModel(srf, wave, RV, Kp, reduce_res, orbital):
 	"""Correlates a single model with the relevant data
@@ -52,12 +42,42 @@ import matplotlib.pyplot as plt
 
 if __name__ == '__main__':
 
+	parser = argparse.ArgumentParser()
+	parser.add_argument("project_path", type=str)
+	parser.add_argument("--sysrem-mode", default="full")  # full | single | list
+	parser.add_argument("--k", type=int, default=15)       # used for full/single
+	parser.add_argument("--ks", type=str, default=None)    # e.g. "1,3,5,10"
+
+	args = parser.parse_args()
+
+	project_path = Path(args.project_path)
+
+	config_file = project_path / "config.py"
+	config_spec = importlib.util.spec_from_file_location("config", str(config_file))
+	config = importlib.util.module_from_spec(config_spec)
+	config_spec.loader.exec_module(config)
+
+	params_file = project_path / "parameters.py"
+	params_spec = importlib.util.spec_from_file_location("parameters", str(params_file))
+	params = importlib.util.module_from_spec(params_spec)
+	params_spec.loader.exec_module(params)
+
+	if args.sysrem_mode == "full":
+		k_list = list(range(args.k))
+
+	elif args.sysrem_mode == "single":
+		k_list = [args.k]
+
+	elif args.sysrem_mode == "list":
+		k_list = [int(x) for x in args.ks.split(",")]
+
+	else:
+		raise ValueError("Unknown SYSREM mode")
+
 	RV = config.RV 
 	Kp = config.Kp 
 	models = config.models
 	nights = config.nights
-
-	ITERS = 4
 
 	for model in models:
 
@@ -79,39 +99,45 @@ if __name__ == '__main__':
 			for camera in config.camera:
 				print(camera)
 
-				if camera == 'red':
-					cameraDict = config.redCameraDict
-				elif camera == 'blue':
-					cameraDict = config.blueCameraDict
+				# if camera == 'red':
+				# 	cameraDict = config.redCameraDict
+				# elif camera == 'blue':
+				# 	cameraDict = config.blueCameraDict
 
-				data_array = np.load(f"{config.path2reduced}/sysrem/{night}_{camera}_sysrem_{ITERS}.npz")
-				sysr = data_array['sysrem']
-				variance = data_array['magerr']
+				sysr_array = np.load(f"{config.path2reduced}/{night}_{camera}_sysrem.npz")
+				data_array = np.load(f"{config.path2reduced}/{night}_{camera}_analysis_ready.npz")
+
+				sysr = sysr_array['sysrem']
+				magerr = sysr_array['magerr']
 				wave = data_array['wave']
 				berv = data_array['berv']
 				Vsys = params.Vsys * np.ones_like(berv)
 				phase = data_array['phase']
 
-				sysr_rest, error_rest = shift2BERV(sysr, wave, variance, berv, Vsys)
-
 				orders_to_correlate = tools.orders2keep(wave, 0.000001, mdl)
 
-				cmap_results = np.zeros((len(orders_to_correlate), sysr.shape[1], len(RV)))
-				fmap_results = np.zeros((len(orders_to_correlate), len(Kp), len(RV)))
+				for k in k_list:
+					sysr_k = sysr[k]
 
-				idx = 0
+					sysr_rest, error_rest = shift2BERV(sysr_k, wave, magerr, berv, Vsys)
 
-				for odx, o in enumerate(sysr_rest):
+					cmap_results = np.zeros((len(orders_to_correlate), sysr_rest.shape[1], len(RV)))
+					fmap_results = np.zeros((len(orders_to_correlate), len(Kp), len(RV)))
 
-					if odx in orders_to_correlate:
+					#idx = 0
+
+					#for odx, o in enumerate(sysr_rest):
+					for idx, order in enumerate(orders_to_correlate):
+
+						#if odx in orders_to_correlate:
 
 						# per order correlation
 						cmap = cc.modelCorrelation_weighted(
-						order_data=sysr_rest[odx, :, :],             # (n_exp, n_pix)
-						order_wave=wave[odx, 0, :],                  # (n_pix,)
-						order_sigmag=error_rest[odx, :, :],          # (n_exp, n_pix)
+						order_data=sysr_rest[order, :, :],             # (n_exp, n_pix)
+						order_wave=wave[order, 0, :],                  # (n_pix,)
+						order_sigmag=error_rest[order, :, :],          # (n_exp, n_pix)
 						RV=RV,
-						wavMinMax=[np.nanmin(wave[odx,0,:]), np.nanmax(wave[odx,0,:])],
+						wavMinMax=[np.nanmin(wave[order,0,:]), np.nanmax(wave[order,0,:])],
 						F_model=F_model
 						)
 
@@ -120,14 +146,16 @@ if __name__ == '__main__':
 						cmap_results[idx] = cmap 
 						fmap_results[idx] = fmap
 
-						idx += 1
+						#idx += 1
 
-				np.savez_compressed(
-					f"{config.path2reduced}/results/{night}_{camera}_{model}_{ITERS}_iters.npz",
-					cmap = cmap_results,
-					fmap = fmap_results,
-					orders = orders_to_correlate
-					)
+					np.savez_compressed(
+						f"{config.path2reduced}/results/{night}_{camera}_{model}_k{k+1}_iters.npz",
+						cmap = cmap_results,
+						fmap = fmap_results,
+						orders = orders_to_correlate,
+						k = k,
+						model = model
+						)
 
 	main()
 

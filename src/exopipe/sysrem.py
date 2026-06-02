@@ -90,24 +90,13 @@ def _compute_a_j(r_ij, c_i, w_ij):
     return a
 
 
-def sysrem_one(mag, magerr, airmass, tol=1e-4, max_iter=50,
-               sigma_floor=None, weight_clip_quantile=None,
-               return_trend=False):
+def sysrem_one(mag, magerr, airmass, tol=1e-4, max_iter=50):
     """
     One SYSREM application for one order.
 
     Inputs:
       mag, magerr: (n_exp, n_pix) magnitudes + mag errors
       airmass:     (n_exp,) initial vector (can be airmass, time, etc.)
-
-    Options:
-      sigma_floor:
-        - None: no floor
-        - float: absolute floor in mag units
-        - ('percentile', p): set floor to percentile p of finite magerr
-      weight_clip_quantile:
-        - None: no clip
-        - float in (0,1): clip weights above that quantile
 
     Returns:
       resid: (n_exp, n_pix) after removing one SYSREM component
@@ -117,39 +106,17 @@ def sysrem_one(mag, magerr, airmass, tol=1e-4, max_iter=50,
     magerr = np.asarray(magerr, dtype=np.float64)
     airmass = np.asarray(airmass, dtype=np.float64)
 
-    # Build validity + sigma
     ok = np.isfinite(mag) & np.isfinite(magerr) & (magerr > 0) & np.isfinite(airmass)[:, None]
 
     sigma = magerr.copy()
-
-    # Sigma floor
-    if sigma_floor is not None:
-        if isinstance(sigma_floor, tuple) and sigma_floor[0] == "percentile":
-            p = float(sigma_floor[1])
-            vals = sigma[ok]
-            if vals.size > 0:
-                floor = np.nanpercentile(vals, p)
-                sigma[ok] = np.maximum(sigma[ok], floor)
-        else:
-            floor = float(sigma_floor)
-            sigma[ok] = np.maximum(sigma[ok], floor)
 
     # Weights
     w = np.zeros_like(mag, dtype=np.float64)
     w[ok] = 1.0 / (sigma[ok] ** 2)
 
-    # Weight clip (optional)
-    if weight_clip_quantile is not None:
-        q = float(weight_clip_quantile)
-        wvals = w[w > 0]
-        if wvals.size > 0:
-            wcap = np.quantile(wvals, q)
-            w = np.minimum(w, wcap)
-
     # Mean-center per pixel with weights
     resid = remove_pixel_mean_weighted(mag, sigma)
 
-    # Work in SYSREM convention: r_ij is (pix, exp)
     r_ij = resid.T  # (n_pix, n_exp)
     w_ij = w.T      # (n_pix, n_exp)
 
@@ -177,31 +144,33 @@ def sysrem_one(mag, magerr, airmass, tol=1e-4, max_iter=50,
     model = c_i[:, None] * a_j[None, :]     # (n_pix, n_exp)
     out = (r_ij - model).T                  # (n_exp, n_pix)
 
-    if return_trend:
-        return out, a_j, c_i
     return out
 
 
-def sysrem_multi(mag, magerr, airmass, n_app=5, **kwargs):
+def sysrem_multi(mag, magerr, airmass, n_app=15, **kwargs):
     """
     Apply SYSREM repeatedly (n_app times) to one order.
     Each iteration recomputes the best rank-1 component on the residuals.
 
     Returns final residual magnitudes (n_exp, n_pix).
     """
+    results_cube = np.zeros((n_app, np.shape(mag)[0], np.shape(mag)[1]))
     r = mag
-    for _ in range(int(n_app)):
+    for k in range(int(n_app)):
         r = sysrem_one(r, magerr, airmass, **kwargs)
-    return r
+        results_cube[k,:,:] = r
+        print(k, 'iterations')
+    return results_cube
 
 
-def sysrem_total(mag_cube, magerr_cube, airmass, n_app=5, orders=None, **kwargs):
+def sysrem_total(mag_cube, magerr_cube, airmass, n_app=15, orders=None, **kwargs):
     """
     Apply SYSREM to multiple orders.
 
     mag_cube, magerr_cube: (n_ord, n_exp, n_pix)
     orders: None or list/array of order indices to process
     """
+    results_cube = np.zeros((n_app, np.shape(mag_cube)[0], np.shape(mag_cube)[1], np.shape(mag_cube)[2]))
     mag_cube = np.asarray(mag_cube, dtype=np.float64)
     magerr_cube = np.asarray(magerr_cube, dtype=np.float64)
 
@@ -209,7 +178,12 @@ def sysrem_total(mag_cube, magerr_cube, airmass, n_app=5, orders=None, **kwargs)
         mag_cube = mag_cube[orders, :, :]
         magerr_cube = magerr_cube[orders, :, :]
 
-    out = np.full_like(mag_cube, np.nan, dtype=np.float64)
     for o in range(mag_cube.shape[0]):
-        out[o] = sysrem_multi(mag_cube[o], magerr_cube[o], airmass, n_app=n_app, **kwargs)
-    return out
+        print('order: ', o)
+        order_result = sysrem_multi(mag_cube[o], magerr_cube[o], airmass, n_app=n_app, **kwargs)
+        results_cube[:,o,:,:] = order_result
+    return results_cube
+
+
+
+
