@@ -117,7 +117,7 @@ if __name__ == '__main__':
 				orders_to_correlate = tools.orders2keep(wave, 0.000001, mdl)
 
 				for k in k_list:
-					sysr_k = sysr[k]
+					sysr_k = sysr[k-1]
 
 					sysr_rest, error_rest = shift2BERV(sysr_k, wave, magerr, berv, Vsys)
 
@@ -149,11 +149,11 @@ if __name__ == '__main__':
 						#idx += 1
 
 					np.savez_compressed(
-						f"{config.path2reduced}/results/{night}_{camera}_{model}_k{k+1}_iters.npz",
+						f"{config.path2reduced}/results/{night}_{camera}_{model}_k{k}_iters.npz",
 						cmap = cmap_results,
 						fmap = fmap_results,
 						orders = orders_to_correlate,
-						k = k,
+						k = k+1,
 						model = model
 						)
 
