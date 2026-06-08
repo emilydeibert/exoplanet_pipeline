@@ -63,7 +63,7 @@ if __name__ == '__main__':
 	params_spec.loader.exec_module(params)
 
 	if args.sysrem_mode == "full":
-		k_list = list(range(args.k))
+		k_list = list(range(1, args.k + 1))
 
 	elif args.sysrem_mode == "single":
 		k_list = [args.k]
@@ -153,7 +153,7 @@ if __name__ == '__main__':
 						cmap = cmap_results,
 						fmap = fmap_results,
 						orders = orders_to_correlate,
-						k = k+1,
+						k = k,
 						model = model
 						)
 
