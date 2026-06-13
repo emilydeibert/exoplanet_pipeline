@@ -119,7 +119,7 @@ velocity:
   # Planet velocity is Kp*sin(2*pi*phase) + Vsys.  If barycentric velocities
   # are provided and include_barycentric=true, barycentric_sign=-1 matches the
   # existing shift2BERV convention in the cross-correlation code.
-  include_barycentric: false
+  include_barycentric: true 
   barycentric_sign: -1.0
 
 preparation:
