@@ -74,7 +74,7 @@ your prepared arrays.  Inputs can be `.npy` files or `.npz` files with keys:
 
 ```yaml
 data:
-  wavelength_unit: micron
+  wavelength_unit: nm
   paths:
     wavelengths: /path/to/night_red_analysis_ready.npz
     flux: /path/to/night_red_sysrem.npz
