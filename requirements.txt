@@ -1,0 +1,13 @@
+setuptools
+wheel
+meson-python
+ninja
+numpy
+scipy
+matplotlib
+astropy
+PyYAML
+h5py
+dynesty
+corner
+petitRADTRANS[retrieval]

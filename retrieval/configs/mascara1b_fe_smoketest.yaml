@@ -1,0 +1,183 @@
+# Minimal petitRADTRANS high-resolution emission retrieval config for MASCARA-1b.
+# This first-pass config is Fe-only and intended for smoke tests plus Kp-Vsys
+# likelihood mapping.  Update the data paths before running.
+
+target:
+  name: MASCARA-1b
+
+prt:
+  # Can also be supplied with PETITRADTRANS_INPUT_DATA or PRT_INPUT_DATA_PATH.
+  # pRT expects this directory itself to be named input_data.
+  input_data_path: null
+  input_data_env_var: PETITRADTRANS_INPUT_DATA
+  require_input_data_path: false
+
+planet:
+  # Values below are only the fixed forward-model scale/gravity anchors for the
+  # smoke test.  The prepared high-resolution likelihood has a free model scale.
+  planet_radius_rj: 1.5
+  star_radius_rsun: 2.1
+  reference_gravity_cgs: 4.1e3
+  reference_pressure_bar: 1.0e-2
+  orbital_period_days: 2.14878
+  mid_transit_bjd_tdb: null
+
+data:
+  wavelength_unit: micron
+  uncertainties_are_variance: false
+  time_dependent_wavelengths: require_static
+  wavelength_static_rtol: 1.0e-8
+  paths:
+    # Each path can be a .npy file or an .npz file with a key supplied either
+    # in data.keys or inline as "path/to/file.npz::key".
+    wavelengths: null
+    flux: null
+    uncertainties: null
+    phases: null
+    times: null
+    barycentric_velocities: null
+    masks: null
+  keys:
+    wavelengths: wave
+    flux: norm_flux
+    uncertainties: norm_var
+    phases: phase
+    times: bjd
+    barycentric_velocities: berv
+    masks: null
+  mask:
+    # Use "bad" for masks where True means masked/bad pixel, "good" for True
+    # means usable pixel.
+    true_means: bad
+
+selection:
+  # Keep this small for the smoke test.  Override on the CLI as needed.
+  orders: [0]
+  pixel_start: null
+  pixel_stop: null
+  wavelength_min_micron: null
+  wavelength_max_micron: null
+
+pressure_grid:
+  min_bar: 1.0e-6
+  max_bar: 1.0e2
+  n_layers: 100
+
+temperature_profile:
+  P_upper_bar: 1.0e-4
+  P_deep_bar: 1.0e-1
+
+species:
+  line_species: [Fe]
+  # pRT accepts minimal names such as Fe for the default high-resolution
+  # Kurucz opacity.  Use unique names here if your local opacity cache requires
+  # them, e.g. Fe: 56Fe__Kurucz.
+  prt_names:
+    Fe: Fe
+    Ti: Ti
+    Cr: Cr
+    Feplus: Fe+
+    Tiplus: Ti+
+    Crplus: Cr+
+  phase2_species: [Fe, Ti, Cr]
+  phase3_species: [Fe, Feplus, Ti, Tiplus, Cr]
+  optional_phase3_species_if_local: [Crplus]
+  filling_gas:
+    H2_weight: 0.74
+    He_weight: 0.24
+  mean_molar_mass: 2.33
+
+model:
+  mode: emission
+  line_opacity_mode: lbl
+  line_by_line_opacity_sampling: 4
+  wavelength_boundaries_micron: [0.383, 1.0]
+  wavelength_margin_fraction: 0.01
+  use_spectral_model_with_velocity_range: false
+  spectral_model_note: >
+    This first pass follows the pRT high-resolution SpectralModel architecture
+    conceptually, but uses direct Radtrans emission plus wrapper-level
+    Doppler shifting/rebinning because the data are already prepared emission
+    residuals and the T-P profile is custom and minimal.
+
+continuum:
+  rayleigh_species: []
+  gas_continuum_contributors:
+    - H2--H2
+    - H2--He
+  hminus:
+    enabled: false
+    fixed_mass_fractions:
+      H-: 1.0e-10
+      H: 1.0e-4
+      e-: 1.0e-4
+
+instrument:
+  resolving_power: 76000
+
+velocity:
+  # Planet velocity is Kp*sin(2*pi*phase) + Vsys.  If barycentric velocities
+  # are provided and include_barycentric=true, barycentric_sign=-1 matches the
+  # existing shift2BERV convention in the cross-correlation code.
+  include_barycentric: false
+  barycentric_sign: -1.0
+
+preparation:
+  # Approximation to the preparation applied to the data.  This is not a full
+  # SYSREM transfer-function correction.
+  method: median_highpass_delta_mag
+  highpass_width_pixels: 601
+  remove_exposure_mean: true
+  standardize_per_exposure: true
+
+priors:
+  Kp: [150.0, 240.0]
+  Vsys: [-30.0, 30.0]
+  T_deep: [2000.0, 5000.0]
+  delta_T_inv: [0.0, 2500.0]
+  log10_Fe: [-8.0, -2.0]
+  log_model_scale: [-4.0, 4.0]
+  allow_negative_delta_T_inv_validation: false
+
+initial_parameters:
+  Kp: 198.0
+  Vsys: -2.0
+  T_deep: 3000.0
+  delta_T_inv: 800.0
+  log10_Fe: -4.5
+  log_model_scale: 0.0
+
+grid:
+  kp_min: 160.0
+  kp_max: 230.0
+  kp_step: 2.0
+  vsys_min: -20.0
+  vsys_max: 20.0
+  vsys_step: 1.0
+  fit_amplitude_analytically: true
+
+sampler:
+  # Keep false until the Fe smoke test and Kp-Vsys map recover the real or
+  # injected signal.  The CLI can override this with --confirm-grid-validated.
+  confirm_grid_validated: false
+  parameters: [Kp, Vsys, T_deep, delta_T_inv, log10_Fe, log_model_scale]
+  nlive: 100
+  dlogz: 0.5
+  bound: multi
+  sample: rwalk
+  maxcall: null
+
+injection:
+  Kp: 198.0
+  Vsys: -2.0
+  scale: 1.0
+  seed: 12345
+
+expected_detection:
+  Kp: 198.0
+  Vsys: -2.0
+  kp_tolerance: 10.0
+  vsys_tolerance: 5.0
+
+output:
+  directory: retrieval/results/mascara1b_fe_smoketest

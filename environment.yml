@@ -1,0 +1,20 @@
+name: exopipe-prt
+channels:
+  - conda-forge
+dependencies:
+  - python>=3.10
+  - pip
+  - setuptools
+  - wheel
+  - meson-python
+  - ninja
+  - numpy
+  - scipy
+  - matplotlib
+  - astropy
+  - pyyaml
+  - h5py
+  - dynesty
+  - corner
+  - pip:
+      - petitRADTRANS[retrieval]
