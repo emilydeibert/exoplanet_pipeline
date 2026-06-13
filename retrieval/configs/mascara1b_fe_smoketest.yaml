@@ -102,9 +102,7 @@ model:
 
 continuum:
   rayleigh_species: []
-  gas_continuum_contributors:
-    - H2--H2
-    - H2--He
+  gas_continuum_contributors: []
   hminus:
     enabled: false
     fixed_mass_fractions:
