@@ -1,0 +1,942 @@
+"""petitRADTRANS emission model utilities for high-resolution retrieval tests.
+
+Units are intentionally explicit:
+
+* pRT wavelengths are handled in cm.
+* User-facing wavelengths in config files are in micron unless stated otherwise.
+* pRT pressures are supplied in bar at initialization.
+* Velocities in the public wrapper are km/s; pRT internals remain cgs.
+
+The first-pass retrieval uses direct ``Radtrans.calculate_flux`` rather than
+``SpectralModel.with_velocity_range``.  The SpectralModel workflow is the
+reference architecture for high-resolution pRT retrievals, but this project
+starts from already prepared/SYSREM-cleaned emission residuals and a custom
+two-point inversion profile.  Generating one rest-frame emission model and
+doing the Doppler shifting/rebinning here keeps the smoke test auditable.
+"""
+
+from __future__ import annotations
+
+import importlib.metadata
+import logging
+import math
+import os
+from pathlib import Path
+from typing import Any, Mapping, Optional, Sequence, Tuple, Union
+
+C_KM_S = 299792.458
+MICRON_TO_CM = 1.0e-4
+NM_TO_CM = 1.0e-7
+ANGSTROM_TO_CM = 1.0e-8
+R_JUP_CM = 7.1492e9
+
+
+def require_numpy():
+    """Import numpy lazily so syntax checks work in minimal environments."""
+
+    try:
+        import numpy as np
+    except ImportError as exc:  # pragma: no cover - depends on user env
+        raise RuntimeError(
+            "NumPy is required for the retrieval module. Install the science "
+            "environment before running this script."
+        ) from exc
+    return np
+
+
+def load_yaml_config(path: Union[str, Path]) -> dict[str, Any]:
+    """Load a YAML config file and return a mutable dictionary."""
+
+    try:
+        import yaml
+    except ImportError as exc:  # pragma: no cover - depends on user env
+        raise RuntimeError(
+            "PyYAML is required to read retrieval config files. Install pyyaml."
+        ) from exc
+
+    path = Path(path)
+    with path.open("r", encoding="utf-8") as handle:
+        config = yaml.safe_load(handle)
+
+    if not isinstance(config, dict):
+        raise ValueError(f"Config {path} must contain a YAML mapping at top level.")
+
+    config.setdefault("_config_path", str(path))
+    return config
+
+
+def setup_logging(output_dir: Union[str, Path], log_name: str = "retrieval.log") -> logging.Logger:
+    """Create a file and stream logger for a retrieval run."""
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    logger = logging.getLogger("retrieval")
+    logger.setLevel(logging.INFO)
+    logger.handlers.clear()
+    logger.propagate = False
+
+    formatter = logging.Formatter(
+        fmt="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
+    stream = logging.StreamHandler()
+    stream.setFormatter(formatter)
+    logger.addHandler(stream)
+
+    file_handler = logging.FileHandler(output_dir / log_name)
+    file_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
+
+    return logger
+
+
+def get_prt_version() -> str:
+    """Return the installed petitRADTRANS version, or a clear placeholder."""
+
+    try:
+        return importlib.metadata.version("petitRADTRANS")
+    except importlib.metadata.PackageNotFoundError:
+        return "not installed"
+
+
+def configured_prt_input_data_path(config: Mapping[str, Any]) -> Optional[Path]:
+    """Return a configured pRT input_data path from YAML or environment.
+
+    The YAML key ``prt.input_data_path`` takes precedence.  Otherwise the code
+    checks ``prt.input_data_env_var`` and then the common environment variables
+    ``PETITRADTRANS_INPUT_DATA`` and ``PRT_INPUT_DATA_PATH``.
+    """
+
+    prt_cfg = config.get("prt", {})
+    path_value = prt_cfg.get("input_data_path", None)
+    if path_value in {"", None}:
+        env_names = [
+            str(prt_cfg.get("input_data_env_var", "PETITRADTRANS_INPUT_DATA")),
+            "PETITRADTRANS_INPUT_DATA",
+            "PRT_INPUT_DATA_PATH",
+        ]
+        for env_name in env_names:
+            value = os.environ.get(env_name)
+            if value:
+                path_value = value
+                break
+
+    if path_value in {"", None}:
+        return None
+    return Path(str(path_value)).expanduser()
+
+
+def configure_prt_input_data_path(config: Mapping[str, Any], logger: Optional[logging.Logger] = None) -> Optional[Path]:
+    """Set pRT's input_data path using pRT's config parser when configured."""
+
+    path = configured_prt_input_data_path(config)
+    prt_cfg = config.get("prt", {})
+    require_path = bool(prt_cfg.get("require_input_data_path", False))
+
+    if path is None:
+        if require_path:
+            raise RuntimeError(
+                "No pRT input_data path was configured. Set prt.input_data_path "
+                "in the YAML file or export PETITRADTRANS_INPUT_DATA."
+            )
+        return None
+
+    if path.name != "input_data":
+        message = (
+            "pRT expects the opacity/data directory itself to be named input_data. "
+            f"Configured path is {path}."
+        )
+        if require_path:
+            raise RuntimeError(message)
+        if logger is not None:
+            logger.warning(message)
+
+    if not path.exists():
+        raise RuntimeError(
+            f"Configured pRT input_data path does not exist: {path}. "
+            "Create it or point PETITRADTRANS_INPUT_DATA to the correct folder."
+        )
+
+    try:
+        from petitRADTRANS.config import petitradtrans_config_parser
+    except ImportError as exc:  # pragma: no cover - depends on user env
+        raise RuntimeError("petitRADTRANS is not installed, so the pRT input_data path cannot be configured.") from exc
+
+    petitradtrans_config_parser.set_input_data_path(str(path))
+    if logger is not None:
+        logger.info("Configured pRT input_data path: %s", path)
+    return path
+
+
+def current_prt_input_data_path() -> Optional[str]:
+    """Return pRT's current input_data path if pRT is importable."""
+
+    try:
+        from petitRADTRANS.config import petitradtrans_config_parser
+    except ImportError:
+        return None
+    try:
+        return str(petitradtrans_config_parser.get_input_data_path())
+    except Exception:
+        return None
+
+
+def standardize_wavelengths_to_cm(wavelengths: Any, unit: str) -> Any:
+    """Convert a wavelength array to cm.
+
+    Parameters
+    ----------
+    wavelengths
+        Numeric array in the unit given by ``unit``.
+    unit
+        One of ``cm``, ``micron``/``um``, ``nm``, or ``angstrom``.
+    """
+
+    np = require_numpy()
+    wave = np.asarray(wavelengths, dtype=float)
+    unit_norm = unit.strip().lower()
+
+    if unit_norm in {"cm", "centimeter", "centimeters"}:
+        factor = 1.0
+    elif unit_norm in {"micron", "microns", "um", "micrometer", "micrometers"}:
+        factor = MICRON_TO_CM
+    elif unit_norm in {"nm", "nanometer", "nanometers"}:
+        factor = NM_TO_CM
+    elif unit_norm in {"angstrom", "angstroms", "aa"}:
+        factor = ANGSTROM_TO_CM
+    else:
+        raise ValueError(
+            "Unknown wavelength_unit. Use one of: cm, micron, nm, angstrom. "
+            f"Got {unit!r}."
+        )
+
+    wave_cm = wave * factor
+    finite = np.isfinite(wave_cm)
+    if not finite.any():
+        raise ValueError("Wavelength array has no finite values after unit conversion.")
+    if np.nanmin(wave_cm) <= 0:
+        raise ValueError("Wavelengths must be positive after conversion to cm.")
+
+    return wave_cm
+
+
+def wavelengths_cm_to_micron(wavelengths_cm: Any) -> Any:
+    """Convert cm wavelengths to micron for plots and logs."""
+
+    np = require_numpy()
+    return np.asarray(wavelengths_cm, dtype=float) / MICRON_TO_CM
+
+
+def build_pressure_grid(config: Mapping[str, Any]) -> Any:
+    """Build the pRT pressure grid in bar.
+
+    Defaults match the requested first-pass model: logspace from 1e-6 to
+    1e2 bar with 100 layers.
+    """
+
+    np = require_numpy()
+    grid = config.get("pressure_grid", {})
+    p_min = float(grid.get("min_bar", 1.0e-6))
+    p_max = float(grid.get("max_bar", 1.0e2))
+    n_layers = int(grid.get("n_layers", 100))
+
+    if p_min <= 0 or p_max <= 0 or p_min >= p_max:
+        raise ValueError(
+            "Pressure grid must satisfy 0 < min_bar < max_bar; "
+            f"got min_bar={p_min}, max_bar={p_max}."
+        )
+    if n_layers < 3:
+        raise ValueError("Pressure grid must have at least 3 layers.")
+
+    return np.logspace(math.log10(p_min), math.log10(p_max), n_layers)
+
+
+def two_point_inversion_profile(
+    pressures_bar: Any,
+    T_deep: float,
+    delta_T_inv: float,
+    P_upper: float = 1.0e-4,
+    P_deep: float = 1.0e-1,
+    allow_negative_delta_T: bool = False,
+) -> Any:
+    """Return a two-point thermal inversion profile.
+
+    ``T_upper = T_deep + delta_T_inv``.  The interpolation is linear in
+    log10(pressure) between ``P_upper`` and ``P_deep`` and constant outside
+    that interval.
+    """
+
+    np = require_numpy()
+    pressures_bar = np.asarray(pressures_bar, dtype=float)
+
+    if P_upper <= 0 or P_deep <= 0:
+        raise ValueError("P_upper and P_deep must be positive bar values.")
+    if P_upper >= P_deep:
+        raise ValueError(
+            f"Expected P_upper < P_deep for an atmosphere; got {P_upper} >= {P_deep}."
+        )
+    if delta_T_inv < 0 and not allow_negative_delta_T:
+        raise ValueError(
+            "delta_T_inv is negative but the baseline prior requires delta_T_inv >= 0. "
+            "Set priors.allow_negative_delta_T_inv_validation=true for validation runs."
+        )
+
+    T_upper = float(T_deep) + float(delta_T_inv)
+    log_p = np.log10(pressures_bar)
+    log_upper = math.log10(P_upper)
+    log_deep = math.log10(P_deep)
+
+    temperatures = np.interp(
+        log_p,
+        [log_upper, log_deep],
+        [T_upper, float(T_deep)],
+        left=T_upper,
+        right=float(T_deep),
+    )
+    return temperatures
+
+
+def _constant_profile(value: float, pressures_bar: Any) -> Any:
+    np = require_numpy()
+    return float(value) * np.ones_like(pressures_bar, dtype=float)
+
+
+def _species_config(config: Mapping[str, Any]) -> Mapping[str, Any]:
+    return config.get("species", {})
+
+
+def resolve_prt_species_names(config: Mapping[str, Any]) -> list[str]:
+    """Map configured shorthand species to pRT opacity names."""
+
+    species_cfg = _species_config(config)
+    requested = species_cfg.get("line_species", ["Fe"])
+    mapping = species_cfg.get("prt_names", {})
+
+    names = []
+    for species in requested:
+        names.append(str(mapping.get(species, species)))
+
+    if not names:
+        raise ValueError("At least one line species must be requested.")
+    return names
+
+
+def _abundance_key_for_species(species: str) -> str:
+    clean = species.replace("+", "plus").replace("-", "_").replace(" ", "_")
+    return f"log10_{clean}"
+
+
+def build_mass_fractions(
+    pressures_bar: Any,
+    parameters: Mapping[str, float],
+    config: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Build pRT mass fractions for trace species plus H2/He filling gas.
+
+    The retrieved ``log10_X`` parameters are interpreted as log10 mass
+    fractions.  H2 and He fill the remaining mass at a fixed ratio.
+    """
+
+    np = require_numpy()
+    pressures_bar = np.asarray(pressures_bar, dtype=float)
+    species_cfg = _species_config(config)
+    requested = species_cfg.get("line_species", ["Fe"])
+    prt_mapping = species_cfg.get("prt_names", {})
+    filling = species_cfg.get("filling_gas", {})
+
+    mass_fractions: dict[str, Any] = {}
+    trace_total = np.zeros_like(pressures_bar, dtype=float)
+
+    for species in requested:
+        parameter_name = _abundance_key_for_species(str(species))
+        if parameter_name not in parameters:
+            raise ValueError(
+                f"Missing abundance parameter {parameter_name!r} for species {species!r}."
+            )
+        abundance = 10.0 ** float(parameters[parameter_name])
+        if abundance < 0 or abundance >= 1:
+            raise ValueError(
+                f"Mass fraction for {species!r} must be in [0, 1); got {abundance}."
+            )
+
+        prt_name = str(prt_mapping.get(species, species))
+        profile = abundance * np.ones_like(pressures_bar, dtype=float)
+        mass_fractions[prt_name] = profile
+        trace_total += profile
+
+    continuum = config.get("continuum", {})
+    hminus = continuum.get("hminus", {})
+    if bool(hminus.get("enabled", False)):
+        required = {"H-", "H", "e-"}
+        fixed = hminus.get("fixed_mass_fractions", {})
+        missing = sorted(required.difference(fixed))
+        if missing:
+            raise ValueError(
+                "H- continuum is enabled, so fixed mass fractions for H-, H, "
+                f"and e- are required. Missing: {missing}."
+            )
+        for name in sorted(required):
+            profile = _constant_profile(float(fixed[name]), pressures_bar)
+            mass_fractions[name] = profile
+            trace_total += profile
+
+    if np.nanmax(trace_total) >= 1.0:
+        raise ValueError(
+            "Trace plus continuum mass fractions exceed unity; lower abundances."
+        )
+
+    h2_weight = float(filling.get("H2_weight", 0.74))
+    he_weight = float(filling.get("He_weight", 0.24))
+    if h2_weight <= 0 or he_weight <= 0:
+        raise ValueError("H2_weight and He_weight must both be positive.")
+
+    fill_total = h2_weight + he_weight
+    leftover = 1.0 - trace_total
+    mass_fractions["H2"] = leftover * h2_weight / fill_total
+    mass_fractions["He"] = leftover * he_weight / fill_total
+
+    return mass_fractions
+
+
+def build_mean_molar_masses(pressures_bar: Any, config: Mapping[str, Any]) -> Any:
+    """Return a fixed mean molar mass profile in amu."""
+
+    species_cfg = _species_config(config)
+    mean_molar_mass = float(species_cfg.get("mean_molar_mass", 2.33))
+    return _constant_profile(mean_molar_mass, pressures_bar)
+
+
+def gas_continuum_contributors(config: Mapping[str, Any]) -> list[str]:
+    """Return pRT continuum opacity contributors."""
+
+    continuum = config.get("continuum", {})
+    contributors = list(continuum.get("gas_continuum_contributors", []))
+
+    if bool(continuum.get("hminus", {}).get("enabled", False)) and "H-" not in contributors:
+        contributors.append("H-")
+
+    return contributors
+
+
+def reference_gravity_cgs(config: Mapping[str, Any]) -> float:
+    """Return the configured planetary reference gravity in cm/s2."""
+
+    planet = config.get("planet", {})
+    if "reference_gravity_cgs" in planet:
+        gravity = float(planet["reference_gravity_cgs"])
+    elif "log_g_cgs" in planet:
+        gravity = 10.0 ** float(planet["log_g_cgs"])
+    else:
+        gravity = 4.1e3
+
+    if gravity <= 0:
+        raise ValueError(f"reference_gravity_cgs must be positive; got {gravity}.")
+    return gravity
+
+
+def _wavelength_boundaries_micron(config: Mapping[str, Any], override: Optional[Sequence[float]]) -> list[float]:
+    if override is not None:
+        boundaries = [float(override[0]), float(override[1])]
+    else:
+        model_cfg = config.get("model", {})
+        boundaries = list(model_cfg.get("wavelength_boundaries_micron", [0.383, 1.0]))
+        boundaries = [float(boundaries[0]), float(boundaries[1])]
+
+    if boundaries[0] <= 0 or boundaries[1] <= boundaries[0]:
+        raise ValueError(
+            "wavelength_boundaries_micron must be [positive_min, larger_max]."
+        )
+    return boundaries
+
+
+def _line_by_line_sampling(config: Mapping[str, Any]) -> Optional[int]:
+    value = config.get("model", {}).get("line_by_line_opacity_sampling", None)
+    if value in {None, "none", "None"}:
+        return None
+    value_int = int(value)
+    if value_int < 1:
+        raise ValueError("line_by_line_opacity_sampling must be >= 1 when set.")
+    return value_int
+
+
+def initialize_prt_atmosphere(
+    config: Mapping[str, Any],
+    wavelength_boundaries_micron: Optional[Sequence[float]] = None,
+    logger: Optional[logging.Logger] = None,
+) -> Any:
+    """Initialize a pRT Radtrans object and load requested opacities."""
+
+    try:
+        from petitRADTRANS.radtrans import Radtrans
+    except ImportError as exc:  # pragma: no cover - depends on user env
+        raise RuntimeError(
+            "petitRADTRANS is required to initialize Radtrans. Install "
+            "petitRADTRANS and run retrieval/check_retrieval_environment.py."
+        ) from exc
+
+    configure_prt_input_data_path(config, logger=logger)
+    if logger is not None:
+        logger.info("pRT active input_data path: %s", current_prt_input_data_path())
+    pressures_bar = build_pressure_grid(config)
+    line_species = resolve_prt_species_names(config)
+    continuum_species = gas_continuum_contributors(config)
+    wavelength_bounds = _wavelength_boundaries_micron(config, wavelength_boundaries_micron)
+
+    kwargs: dict[str, Any] = {
+        "pressures": pressures_bar,
+        "line_species": line_species,
+        "rayleigh_species": list(config.get("continuum", {}).get("rayleigh_species", [])),
+        "gas_continuum_contributors": continuum_species,
+        "wavelength_boundaries": wavelength_bounds,
+        "line_opacity_mode": str(config.get("model", {}).get("line_opacity_mode", "lbl")),
+    }
+    sampling = _line_by_line_sampling(config)
+    if sampling is not None:
+        kwargs["line_by_line_opacity_sampling"] = sampling
+
+    try:
+        return Radtrans(**kwargs)
+    except Exception as exc:  # pragma: no cover - pRT/opacity dependent
+        raise RuntimeError(
+            "Failed to initialize petitRADTRANS Radtrans and load opacities. "
+            f"Requested line_species={line_species}, continuum={continuum_species}, "
+            f"wavelength_boundaries_micron={wavelength_bounds}, "
+            f"pRT input_data={current_prt_input_data_path()}. "
+            "Check that the lbl opacity files exist locally on the cluster, or "
+            "that pRT is allowed to download them before production runs."
+        ) from exc
+
+
+def generate_prt_emission_model(
+    config: Mapping[str, Any],
+    parameters: Mapping[str, float],
+    wavelength_boundaries_micron: Optional[Sequence[float]] = None,
+    atmosphere: Optional[Any] = None,
+    logger: Optional[logging.Logger] = None,
+) -> Tuple[Any, Any, dict[str, Any]]:
+    """Generate a rest-frame high-resolution pRT emission spectrum.
+
+    Returns
+    -------
+    wavelength_cm, flux_lambda, metadata
+        pRT3 ``calculate_flux`` returns wavelength in cm and F_lambda in cgs
+        by default.
+    """
+
+    np = require_numpy()
+
+    try:
+        import petitRADTRANS
+    except ImportError as exc:  # pragma: no cover - depends on user env
+        raise RuntimeError(
+            "petitRADTRANS is required to generate pRT emission models. "
+            "Install petitRADTRANS and make sure the requested lbl opacities "
+            "are available locally or downloadable by pRT."
+        ) from exc
+
+    pressures_bar = build_pressure_grid(config)
+    tp_cfg = config.get("temperature_profile", {})
+    priors = config.get("priors", {})
+
+    temperatures = two_point_inversion_profile(
+        pressures_bar=pressures_bar,
+        T_deep=float(parameters["T_deep"]),
+        delta_T_inv=float(parameters["delta_T_inv"]),
+        P_upper=float(tp_cfg.get("P_upper_bar", 1.0e-4)),
+        P_deep=float(tp_cfg.get("P_deep_bar", 1.0e-1)),
+        allow_negative_delta_T=bool(
+            priors.get("allow_negative_delta_T_inv_validation", False)
+        ),
+    )
+    mass_fractions = build_mass_fractions(pressures_bar, parameters, config)
+    mean_molar_masses = build_mean_molar_masses(pressures_bar, config)
+    line_species = resolve_prt_species_names(config)
+    continuum_species = gas_continuum_contributors(config)
+    wavelength_bounds = _wavelength_boundaries_micron(config, wavelength_boundaries_micron)
+
+    if logger is not None:
+        logger.info("pRT version: %s", getattr(petitRADTRANS, "__version__", get_prt_version()))
+        logger.info("Requested pRT line species: %s", line_species)
+        logger.info("Requested pRT continuum contributors: %s", continuum_species)
+        logger.info("pRT wavelength boundaries: %.6f-%.6f micron", *wavelength_bounds)
+
+    if atmosphere is None:
+        atmosphere = initialize_prt_atmosphere(
+            config,
+            wavelength_boundaries_micron=wavelength_boundaries_micron,
+            logger=logger,
+        )
+
+    try:
+        wavelengths_cm, flux_lambda, _ = atmosphere.calculate_flux(
+            temperatures=temperatures,
+            mass_fractions=mass_fractions,
+            mean_molar_masses=mean_molar_masses,
+            reference_gravity=reference_gravity_cgs(config),
+        )
+    except Exception as exc:  # pragma: no cover - pRT dependent
+        raise RuntimeError(
+            "pRT calculate_flux failed for the current emission model. "
+            f"Species={line_species}, mass_fraction_keys={sorted(mass_fractions)}, "
+            f"T_deep={parameters.get('T_deep')}, "
+            f"delta_T_inv={parameters.get('delta_T_inv')}. "
+            "Check pRT opacity coverage, pressure/temperature grid coverage, "
+            "and required continuum mass fractions."
+        ) from exc
+
+    wavelengths_cm = np.asarray(wavelengths_cm, dtype=float)
+    flux_lambda = np.asarray(flux_lambda, dtype=float)
+    order = np.argsort(wavelengths_cm)
+    wavelengths_cm = wavelengths_cm[order]
+    flux_lambda = flux_lambda[order]
+
+    opacity_paths = collect_prt_opacity_file_paths(atmosphere) if logger is not None else []
+    if logger is not None:
+        if opacity_paths:
+            for path in opacity_paths:
+                logger.info("pRT opacity file: %s", path)
+        else:
+            logger.info("pRT opacity file paths were not discoverable from the Radtrans object.")
+
+    metadata = {
+        "pressures_bar": pressures_bar,
+        "temperatures": temperatures,
+        "mass_fraction_keys": sorted(mass_fractions),
+        "line_species": line_species,
+        "gas_continuum_contributors": continuum_species,
+        "opacity_paths": opacity_paths,
+    }
+    return wavelengths_cm, flux_lambda, metadata
+
+
+def collect_prt_opacity_file_paths(obj: Any, max_depth: int = 4) -> list[str]:
+    """Best-effort discovery of loaded pRT opacity file paths."""
+
+    paths: set[str] = set()
+    seen: set[int] = set()
+
+    def visit(value: Any, depth: int) -> None:
+        if depth > max_depth:
+            return
+        value_id = id(value)
+        if value_id in seen:
+            return
+        seen.add(value_id)
+
+        if isinstance(value, str):
+            if ".petitRADTRANS" in value or value.endswith(".h5"):
+                paths.add(value)
+            return
+        if isinstance(value, Mapping):
+            for item in value.values():
+                visit(item, depth + 1)
+            return
+        if isinstance(value, (list, tuple, set)):
+            for item in value:
+                visit(item, depth + 1)
+            return
+        if hasattr(value, "__dict__"):
+            visit(vars(value), depth + 1)
+
+    visit(obj, 0)
+    return sorted(paths)
+
+
+def convolve_to_resolution(
+    wavelengths_cm: Any,
+    flux: Any,
+    resolving_power: float,
+) -> Any:
+    """Convolve a high-resolution spectrum with a Gaussian LSF.
+
+    The convolution is performed on the native pRT grid assuming approximately
+    constant spacing in ln(lambda), which is appropriate for pRT lbl opacities
+    sampled at near-constant resolving power.
+    """
+
+    np = require_numpy()
+    try:
+        from scipy.ndimage import gaussian_filter1d
+    except ImportError as exc:  # pragma: no cover - depends on user env
+        raise RuntimeError("SciPy is required for instrumental convolution.") from exc
+
+    wavelengths_cm = np.asarray(wavelengths_cm, dtype=float)
+    flux = np.asarray(flux, dtype=float)
+    resolving_power = float(resolving_power)
+
+    if resolving_power <= 0:
+        raise ValueError("resolving_power must be positive.")
+    if wavelengths_cm.ndim != 1 or flux.ndim != 1 or wavelengths_cm.size != flux.size:
+        raise ValueError("wavelengths_cm and flux must be 1D arrays with the same length.")
+    if wavelengths_cm.size < 3:
+        raise ValueError("Need at least three model pixels to convolve.")
+
+    log_lambda = np.log(wavelengths_cm)
+    dlog = np.nanmedian(np.diff(log_lambda))
+    if not np.isfinite(dlog) or dlog <= 0:
+        raise ValueError("Model wavelength grid must be strictly increasing.")
+
+    fwhm_log_lambda = 1.0 / resolving_power
+    sigma_pixels = fwhm_log_lambda / (2.354820045 * dlog)
+    if sigma_pixels <= 0:
+        return flux.copy()
+
+    return gaussian_filter1d(flux, sigma=sigma_pixels, mode="nearest")
+
+
+def rebin_spectrum(wavelengths_cm: Any, flux: Any, target_wavelengths_cm: Any) -> Any:
+    """Linearly interpolate a model spectrum onto any target wavelength shape."""
+
+    np = require_numpy()
+    wave = np.asarray(wavelengths_cm, dtype=float)
+    spec = np.asarray(flux, dtype=float)
+    target = np.asarray(target_wavelengths_cm, dtype=float)
+
+    if wave.ndim != 1 or spec.ndim != 1:
+        raise ValueError("Model wavelength and flux arrays must be 1D.")
+    if wave.size != spec.size:
+        raise ValueError("Model wavelength and flux arrays must have the same length.")
+
+    return np.interp(target, wave, spec, left=np.nan, right=np.nan)
+
+
+def convolve_and_rebin_model(
+    model_wavelengths_cm: Any,
+    model_flux: Any,
+    observed_wavelengths_cm: Any,
+    resolving_power: float,
+) -> Any:
+    """Convolve a rest-frame model and interpolate it to observed wavelengths."""
+
+    convolved = convolve_to_resolution(model_wavelengths_cm, model_flux, resolving_power)
+    return rebin_spectrum(model_wavelengths_cm, convolved, observed_wavelengths_cm)
+
+
+def planet_radial_velocity_kms(
+    phases: Any,
+    Kp: float,
+    Vsys: float,
+    barycentric_velocities: Optional[Any] = None,
+    include_barycentric: bool = False,
+    barycentric_sign: float = -1.0,
+) -> Any:
+    """Compute exposure velocities in km/s for model shifting.
+
+    The orbital convention follows the existing cross-correlation code:
+    ``Kp * sin(2*pi*phase)``.  If barycentric velocities are provided, the
+    default sign is ``-1`` to match the current ``shift2BERV`` convention.
+    """
+
+    np = require_numpy()
+    phases = np.asarray(phases, dtype=float)
+    velocities = float(Kp) * np.sin(2.0 * np.pi * phases) + float(Vsys)
+
+    if include_barycentric:
+        if barycentric_velocities is None:
+            raise ValueError("include_barycentric=True but no barycentric velocities were supplied.")
+        velocities = velocities + float(barycentric_sign) * np.asarray(
+            barycentric_velocities, dtype=float
+        )
+
+    return velocities
+
+
+def shifted_model_cube(
+    rest_wavelengths_cm: Any,
+    rest_flux: Any,
+    observed_wavelengths_cm: Any,
+    phases: Any,
+    Kp: float,
+    Vsys: float,
+    resolving_power: float,
+    barycentric_velocities: Optional[Any] = None,
+    velocity_config: Optional[Mapping[str, Any]] = None,
+) -> Any:
+    """Convolve, Doppler shift, and rebin a rest-frame model for all exposures."""
+
+    np = require_numpy()
+    obs_wave = np.asarray(observed_wavelengths_cm, dtype=float)
+    phases = np.asarray(phases, dtype=float)
+
+    if obs_wave.ndim != 2:
+        raise ValueError(
+            "observed_wavelengths_cm must have shape (n_orders, n_pixels) before "
+            "building the shifted model cube."
+        )
+    if phases.ndim != 1:
+        raise ValueError("phases must be a 1D array.")
+
+    velocity_config = velocity_config or {}
+    velocities = planet_radial_velocity_kms(
+        phases=phases,
+        Kp=Kp,
+        Vsys=Vsys,
+        barycentric_velocities=barycentric_velocities,
+        include_barycentric=bool(velocity_config.get("include_barycentric", False)),
+        barycentric_sign=float(velocity_config.get("barycentric_sign", -1.0)),
+    )
+
+    convolved = convolve_to_resolution(rest_wavelengths_cm, rest_flux, resolving_power)
+    n_orders, n_pixels = obs_wave.shape
+    n_exp = phases.size
+    cube = np.full((n_orders, n_exp, n_pixels), np.nan, dtype=float)
+
+    for order_index in range(n_orders):
+        for exp_index, velocity in enumerate(velocities):
+            doppler = 1.0 + velocity / C_KM_S
+            if doppler <= 0:
+                raise ValueError(f"Non-physical Doppler factor for velocity {velocity} km/s.")
+            rest_grid_for_observed_pixels = obs_wave[order_index] / doppler
+            cube[order_index, exp_index] = rebin_spectrum(
+                rest_wavelengths_cm,
+                convolved,
+                rest_grid_for_observed_pixels,
+            )
+
+    return cube
+
+
+def _median_highpass(cube: Any, width_pixels: int) -> Any:
+    np = require_numpy()
+    try:
+        from scipy.ndimage import median_filter
+    except ImportError as exc:  # pragma: no cover - depends on user env
+        raise RuntimeError("SciPy is required for high-pass model preparation.") from exc
+
+    cube = np.asarray(cube, dtype=float)
+    width = int(width_pixels)
+    if width < 3:
+        raise ValueError("highpass_width_pixels must be at least 3.")
+    if width % 2 == 0:
+        width += 1
+
+    fill = np.nanmedian(cube, axis=2, keepdims=True)
+    filled = np.where(np.isfinite(cube), cube, fill)
+    continuum = median_filter(filled, size=(1, 1, width), mode="nearest")
+    continuum = np.where(np.isfinite(continuum) & (continuum != 0), continuum, np.nan)
+    return cube / continuum - 1.0
+
+
+def prepare_model_like_data(
+    model_cube: Any,
+    config: Mapping[str, Any],
+    data_mask: Optional[Any] = None,
+) -> Any:
+    """Approximate the data preparation on the model cube.
+
+    This is intentionally modest: it high-pass filters along the pixel axis,
+    optionally converts to delta magnitudes, removes per-exposure means, and
+    optionally standardizes each order/exposure.  It is not a full SYSREM
+    transfer-function correction.
+    """
+
+    np = require_numpy()
+    model_cube = np.asarray(model_cube, dtype=float)
+    prep_cfg = config.get("preparation", {})
+    method = str(prep_cfg.get("method", "median_highpass_delta_mag"))
+    width = int(prep_cfg.get("highpass_width_pixels", 601))
+
+    if method in {"none", "raw"}:
+        prepared = model_cube.copy()
+    elif method in {"median_highpass", "median_highpass_relative_flux"}:
+        prepared = _median_highpass(model_cube, width)
+    elif method == "median_highpass_delta_mag":
+        relative = _median_highpass(model_cube, width)
+        flux_ratio = np.clip(1.0 + relative, 1.0e-300, None)
+        prepared = -2.5 * np.log10(flux_ratio)
+    else:
+        raise ValueError(
+            "Unknown preparation.method. Use none, median_highpass, "
+            "median_highpass_relative_flux, or median_highpass_delta_mag."
+        )
+
+    mask = np.isfinite(prepared)
+    if data_mask is not None:
+        mask &= np.asarray(data_mask, dtype=bool)
+
+    if bool(prep_cfg.get("remove_exposure_mean", True)):
+        work = np.where(mask, prepared, np.nan)
+        mean = np.nanmean(work, axis=2, keepdims=True)
+        prepared = prepared - mean
+
+    if bool(prep_cfg.get("standardize_per_exposure", True)):
+        work = np.where(mask, prepared, np.nan)
+        std = np.nanstd(work, axis=2, keepdims=True)
+        prepared = np.where(std > 0, prepared / std, np.nan)
+
+    prepared = np.where(mask, prepared, np.nan)
+    return prepared
+
+
+def wavelength_bounds_for_model(
+    observed_wavelengths_cm: Any,
+    max_abs_velocity_kms: float,
+    margin_fraction: float = 0.01,
+) -> list[float]:
+    """Return pRT wavelength boundaries in micron with velocity/margin padding."""
+
+    np = require_numpy()
+    obs = np.asarray(observed_wavelengths_cm, dtype=float)
+    finite = np.isfinite(obs)
+    if not finite.any():
+        raise ValueError("No finite observed wavelengths available for pRT boundaries.")
+
+    velocity_pad = 1.0 + abs(float(max_abs_velocity_kms)) / C_KM_S
+    lo_cm = np.nanmin(obs) / velocity_pad
+    hi_cm = np.nanmax(obs) * velocity_pad
+    span = hi_cm - lo_cm
+    lo_cm -= float(margin_fraction) * span
+    hi_cm += float(margin_fraction) * span
+
+    return [lo_cm / MICRON_TO_CM, hi_cm / MICRON_TO_CM]
+
+
+def parameters_from_config(config: Mapping[str, Any]) -> dict[str, float]:
+    """Return fixed initial parameters for the smoke test/grid model."""
+
+    params = dict(config.get("initial_parameters", {}))
+    required = [
+        "Kp",
+        "Vsys",
+        "T_deep",
+        "delta_T_inv",
+        "log10_Fe",
+        "log_model_scale",
+    ]
+    missing = [key for key in required if key not in params]
+    if missing:
+        raise ValueError(f"Missing initial_parameters entries: {missing}.")
+    return {key: float(value) for key, value in params.items()}
+
+
+def log_run_summary(
+    logger: logging.Logger,
+    config: Mapping[str, Any],
+    parameters: Mapping[str, float],
+    wavelengths_cm: Optional[Any] = None,
+    mask: Optional[Any] = None,
+) -> None:
+    """Log core configuration and data dimensions."""
+
+    np = require_numpy()
+    logger.info("Target: %s", config.get("target", {}).get("name", "unknown"))
+    logger.info("Parameters: %s", dict(parameters))
+    logger.info("pRT package version: %s", get_prt_version())
+    logger.info("Configured line species: %s", _species_config(config).get("line_species", ["Fe"]))
+    logger.info("Line opacity mode: %s", config.get("model", {}).get("line_opacity_mode", "lbl"))
+    logger.info("Resolving power: %s", config.get("instrument", {}).get("resolving_power"))
+
+    if wavelengths_cm is not None:
+        wave_um = wavelengths_cm_to_micron(wavelengths_cm)
+        logger.info(
+            "Observed wavelength range: %.6f-%.6f micron",
+            float(np.nanmin(wave_um)),
+            float(np.nanmax(wave_um)),
+        )
+
+    if mask is not None:
+        mask = np.asarray(mask, dtype=bool)
+        logger.info("Valid data pixels: %d / %d", int(np.sum(mask)), int(mask.size))
+        logger.info("Masked pixel fraction: %.4f", 1.0 - float(np.sum(mask)) / float(mask.size))
