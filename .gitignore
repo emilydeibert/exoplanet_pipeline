@@ -20,3 +20,8 @@ src/exopipe/cli/sysremData.py
 src/exopipe/cli/correlateModel.py
 src/exopipe/cli/correlateModel_iterations.py
 src/exopipe/cli/injectAndCorrelateData.py
+
+retrieval/results/
+
+*.h5
+*.hdf5
