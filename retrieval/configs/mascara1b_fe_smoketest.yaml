@@ -20,7 +20,7 @@ planet:
   reference_gravity_cgs: 4.1e3
   reference_pressure_bar: 1.0e-2
   orbital_period_days: 2.14878
-  mid_transit_bjd_tdb: null
+  mid_transit_bjd_tdb: 2458833.488151
 
 data:
   wavelength_unit: nm 
