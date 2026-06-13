@@ -30,17 +30,17 @@ data:
   paths:
     # Each path can be a .npy file or an .npz file with a key supplied either
     # in data.keys or inline as "path/to/file.npz::key".
-    wavelengths: null
-    flux: null
-    uncertainties: null
-    phases: null
-    times: null
-    barycentric_velocities: null
+    wavelengths: /home/edeibert/projects/def-ldang05/edeibert/data/mascara1b/retrieval_inputs/20240528_red_analysis_ready.npz
+    flux: /home/edeibert/projects/def-ldang05/edeibert/data/mascara1b/retrieval_inputs/20240528_red_sysrem_4iters.npz
+    uncertainties: /home/edeibert/projects/def-ldang05/edeibert/data/mascara1b/retrieval_inputs/20240528_red_sysrem_4iters.npz
+    phases: /home/edeibert/projects/def-ldang05/edeibert/data/mascara1b/retrieval_inputs/20240528_red_analysis_ready.npz
+    times: /home/edeibert/projects/def-ldang05/edeibert/data/mascara1b/retrieval_inputs/20240528_red_analysis_ready.npz
+    barycentric_velocities: /home/edeibert/projects/def-ldang05/edeibert/data/mascara1b/retrieval_inputs/20240528_red_analysis_ready.npz
     masks: null
   keys:
     wavelengths: wave
-    flux: norm_flux
-    uncertainties: norm_var
+    flux: sysrem
+    uncertainties: magerr
     phases: phase
     times: bjd
     barycentric_velocities: berv
