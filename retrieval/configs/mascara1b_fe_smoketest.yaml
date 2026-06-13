@@ -8,9 +8,9 @@ target:
 prt:
   # Can also be supplied with PETITRADTRANS_INPUT_DATA or PRT_INPUT_DATA_PATH.
   # pRT expects this directory itself to be named input_data.
-  input_data_path: null
+  input_data_path: /home/edeibert/projects/def-ldang05/edeibert/petitRADTRANS/input_data
   input_data_env_var: PETITRADTRANS_INPUT_DATA
-  require_input_data_path: false
+  require_input_data_path: true
 
 planet:
   # Values below are only the fixed forward-model scale/gravity anchors for the
