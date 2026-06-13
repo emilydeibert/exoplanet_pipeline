@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
 from pathlib import Path
 
 from retrieval.likelihood import (
@@ -16,6 +17,7 @@ from retrieval.likelihood import (
 )
 from retrieval.plotting import save_best_fit_model_plot, save_kp_vsys_likelihood_plot
 from retrieval.prt_emission_model import (
+    build_convolved_model,
     generate_prt_emission_model,
     load_yaml_config,
     log_run_summary,
@@ -40,6 +42,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--injection-kp", type=float, default=None)
     parser.add_argument("--injection-vsys", type=float, default=None)
     parser.add_argument("--injection-scale", type=float, default=None)
+    parser.add_argument("--n-jobs", type=int, default=None, help="Parallel grid workers. Use 1 for serial mode.")
+    parser.add_argument(
+        "--tiny-grid",
+        action="store_true",
+        help="Run a 3x3 grid around expected_detection for quick timing/debug checks.",
+    )
     return parser.parse_args()
 
 
@@ -51,6 +59,19 @@ def apply_overrides(config: dict, args: argparse.Namespace) -> None:
         selection["pixel_start"] = args.pixel_start
     if args.pixel_stop is not None:
         selection["pixel_stop"] = args.pixel_stop
+    grid = config.setdefault("grid", {})
+    if args.n_jobs is not None:
+        grid["n_jobs"] = args.n_jobs
+    if args.tiny_grid:
+        expected = config.get("expected_detection", {"Kp": 198.0, "Vsys": -2.0})
+        expected_kp = float(expected.get("Kp", 198.0))
+        expected_vsys = float(expected.get("Vsys", -2.0))
+        grid["kp_min"] = expected_kp - 2.0
+        grid["kp_max"] = expected_kp + 2.0
+        grid["kp_step"] = 2.0
+        grid["vsys_min"] = expected_vsys - 1.0
+        grid["vsys_max"] = expected_vsys + 1.0
+        grid["vsys_step"] = 1.0
 
 
 def main() -> None:
@@ -76,6 +97,18 @@ def main() -> None:
     )
     logger.info("Model metadata: %s", metadata)
 
+    convolve_start = time.perf_counter()
+    convolved_model = build_convolved_model(
+        rest_wave_cm,
+        rest_flux,
+        float(config["instrument"]["resolving_power"]),
+    )
+    logger.info(
+        "Built reusable convolved model cache at R=%.1f for grid/injection helpers in %.3fs",
+        convolved_model.resolving_power,
+        time.perf_counter() - convolve_start,
+    )
+
     injection_summary = None
     if args.inject_fake:
         injection_cfg = config.get("injection", {})
@@ -91,6 +124,7 @@ def main() -> None:
             config=config,
             Kp=injection_kp,
             Vsys=injection_vsys,
+            convolved_rest_flux=convolved_model.flux,
         )
         data = inject_fake_signal(
             data=data,
@@ -113,6 +147,8 @@ def main() -> None:
         rest_flux=rest_flux,
         config=config,
         parameters=parameters,
+        convolved_rest_flux=convolved_model.flux,
+        n_jobs=int(config.get("grid", {}).get("n_jobs", 1)),
         logger=logger,
     )
 
@@ -140,6 +176,7 @@ def main() -> None:
         config=config,
         Kp=best["Kp"],
         Vsys=best["Vsys"],
+        convolved_rest_flux=convolved_model.flux,
     )
     save_best_fit_model_plot(
         data,

@@ -3,7 +3,7 @@
 #SBATCH --account=YOUR_ACCOUNT
 #SBATCH --time=06:00:00
 #SBATCH --mem=16G
-#SBATCH --cpus-per-task=1
+#SBATCH --cpus-per-task=4
 #SBATCH --output=retrieval/slurm/logs/%x-%j.out
 #SBATCH --error=retrieval/slurm/logs/%x-%j.err
 
@@ -26,4 +26,5 @@ python -m retrieval.check_retrieval_environment \
   --require-local-opacities
 
 python -m retrieval.run_fe_kp_vsys_grid \
-  --config retrieval/configs/mascara1b_fe_smoketest.yaml
+  --config retrieval/configs/mascara1b_fe_smoketest.yaml \
+  --n-jobs "${SLURM_CPUS_PER_TASK}"

@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import json
 import logging
+import multiprocessing as mp
+import time
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence, Tuple, Union
 
 from .prt_emission_model import (
     MICRON_TO_CM,
+    build_convolved_model,
     generate_prt_emission_model,
     initialize_prt_atmosphere,
     parameters_from_config,
@@ -19,6 +22,9 @@ from .prt_emission_model import (
     standardize_wavelengths_to_cm,
     wavelength_bounds_for_model,
 )
+
+
+_GRID_WORKER_STATE: dict[str, Any] = {}
 
 
 @dataclass
@@ -348,12 +354,123 @@ def compute_log_likelihood(
     return float(loglike), float(amplitude)
 
 
+def _evaluate_grid_point(
+    task: Tuple[int, int, float, float],
+    data: RetrievalData,
+    rest_wavelengths_cm: Any,
+    rest_flux: Any,
+    convolved_rest_flux: Any,
+    config: Mapping[str, Any],
+    parameters: Mapping[str, float],
+    resolving_power: float,
+    velocity_cfg: Mapping[str, Any],
+    fit_amp: bool,
+) -> dict[str, Any]:
+    """Evaluate one Kp/Vsys grid point and record step timings."""
+
+    k_index, v_index, kp, vsys = task
+    timings: dict[str, float] = {}
+    total_start = time.perf_counter()
+
+    step_start = time.perf_counter()
+    cube = shifted_model_cube(
+        rest_wavelengths_cm=rest_wavelengths_cm,
+        rest_flux=rest_flux,
+        observed_wavelengths_cm=data.wavelengths_cm,
+        phases=data.phases,
+        Kp=float(kp),
+        Vsys=float(vsys),
+        resolving_power=resolving_power,
+        barycentric_velocities=data.barycentric_velocities,
+        velocity_config=velocity_cfg,
+        convolved_rest_flux=convolved_rest_flux,
+    )
+    timings["shifted_model_cube"] = time.perf_counter() - step_start
+
+    step_start = time.perf_counter()
+    prepared = prepare_model_like_data(cube, config, data_mask=data.good_mask)
+    timings["prepare_model_like_data"] = time.perf_counter() - step_start
+
+    step_start = time.perf_counter()
+    ll, amp = compute_log_likelihood(
+        data,
+        prepared,
+        log_model_scale=float(parameters.get("log_model_scale", 0.0)),
+        fit_amplitude_analytically=fit_amp,
+    )
+    timings["compute_log_likelihood"] = time.perf_counter() - step_start
+    timings["grid_point_total"] = time.perf_counter() - total_start
+
+    return {
+        "k_index": int(k_index),
+        "v_index": int(v_index),
+        "Kp": float(kp),
+        "Vsys": float(vsys),
+        "log_likelihood": float(ll),
+        "amplitude": float(amp),
+        "timings": timings,
+    }
+
+
+def _init_grid_worker(
+    data: RetrievalData,
+    rest_wavelengths_cm: Any,
+    rest_flux: Any,
+    convolved_rest_flux: Any,
+    config: Mapping[str, Any],
+    parameters: Mapping[str, float],
+    resolving_power: float,
+    velocity_cfg: Mapping[str, Any],
+    fit_amp: bool,
+) -> None:
+    """Store read-only grid state in each multiprocessing worker."""
+
+    global _GRID_WORKER_STATE
+    _GRID_WORKER_STATE = {
+        "data": data,
+        "rest_wavelengths_cm": rest_wavelengths_cm,
+        "rest_flux": rest_flux,
+        "convolved_rest_flux": convolved_rest_flux,
+        "config": config,
+        "parameters": parameters,
+        "resolving_power": resolving_power,
+        "velocity_cfg": velocity_cfg,
+        "fit_amp": fit_amp,
+    }
+
+
+def _evaluate_grid_point_worker(task: Tuple[int, int, float, float]) -> dict[str, Any]:
+    return _evaluate_grid_point(task, **_GRID_WORKER_STATE)
+
+
+def _log_grid_point_timing(logger: Optional[logging.Logger], result: Mapping[str, Any]) -> None:
+    if logger is None:
+        return
+
+    timings = result["timings"]
+    logger.info(
+        "Grid point Kp=%.3f Vsys=%.3f logL=%.6e amp=%.6e "
+        "timing shifted_model_cube=%.3fs prepare_model_like_data=%.3fs "
+        "compute_log_likelihood=%.3fs total=%.3fs",
+        result["Kp"],
+        result["Vsys"],
+        result["log_likelihood"],
+        result["amplitude"],
+        timings["shifted_model_cube"],
+        timings["prepare_model_like_data"],
+        timings["compute_log_likelihood"],
+        timings["grid_point_total"],
+    )
+
+
 def run_kp_vsys_grid(
     data: RetrievalData,
     rest_wavelengths_cm: Any,
     rest_flux: Any,
     config: Mapping[str, Any],
     parameters: Optional[Mapping[str, float]] = None,
+    convolved_rest_flux: Optional[Any] = None,
+    n_jobs: Optional[int] = None,
     logger: Optional[logging.Logger] = None,
 ) -> dict[str, Any]:
     """Run the Fe-only Kp-Vsys likelihood grid for one fixed pRT spectrum."""
@@ -376,39 +493,106 @@ def run_kp_vsys_grid(
 
     loglike = np.full((kp_values.size, vsys_values.size), np.nan, dtype=float)
     amplitude = np.full_like(loglike, np.nan)
+    timings = {
+        "shifted_model_cube": np.full_like(loglike, np.nan),
+        "prepare_model_like_data": np.full_like(loglike, np.nan),
+        "compute_log_likelihood": np.full_like(loglike, np.nan),
+        "grid_point_total": np.full_like(loglike, np.nan),
+    }
     fit_amp = bool(grid_cfg.get("fit_amplitude_analytically", True))
     resolving_power = float(instrument_cfg["resolving_power"])
     velocity_cfg = config.get("velocity", {})
+    n_jobs = int(grid_cfg.get("n_jobs", 1) if n_jobs is None else n_jobs)
+    if n_jobs < 1:
+        raise ValueError(f"n_jobs must be >= 1; got {n_jobs}.")
+
+    convolve_start = time.perf_counter()
+    if convolved_rest_flux is None:
+        convolved = build_convolved_model(rest_wavelengths_cm, rest_flux, resolving_power)
+        rest_wavelengths_for_grid = convolved.wavelengths_cm
+        convolved_flux_for_grid = convolved.flux
+        convolve_elapsed = time.perf_counter() - convolve_start
+        if logger is not None:
+            logger.info(
+                "Cached convolved rest-frame model once at R=%.1f in %.3fs",
+                resolving_power,
+                convolve_elapsed,
+            )
+    else:
+        rest_wavelengths_for_grid = rest_wavelengths_cm
+        convolved_flux_for_grid = convolved_rest_flux
+        if logger is not None:
+            logger.info("Using caller-supplied convolved rest-frame model cache.")
 
     if logger is not None:
         logger.info("Running Kp grid: %s", kp_values)
         logger.info("Running Vsys grid: %s", vsys_values)
+        logger.info("Grid evaluation n_jobs=%d", n_jobs)
 
-    for k_index, kp in enumerate(kp_values):
-        if logger is not None:
-            logger.info("Grid row %d/%d: Kp=%.3f km/s", k_index + 1, kp_values.size, kp)
+    tasks = [
+        (k_index, v_index, float(kp), float(vsys))
+        for k_index, kp in enumerate(kp_values)
+        for v_index, vsys in enumerate(vsys_values)
+    ]
 
-        for v_index, vsys in enumerate(vsys_values):
-            cube = shifted_model_cube(
-                rest_wavelengths_cm=rest_wavelengths_cm,
+    def store_result(result: Mapping[str, Any]) -> None:
+        k_index = int(result["k_index"])
+        v_index = int(result["v_index"])
+        loglike[k_index, v_index] = float(result["log_likelihood"])
+        amplitude[k_index, v_index] = float(result["amplitude"])
+        for name, values in timings.items():
+            values[k_index, v_index] = float(result["timings"][name])
+        _log_grid_point_timing(logger, result)
+
+    grid_start = time.perf_counter()
+    if n_jobs == 1:
+        for task in tasks:
+            result = _evaluate_grid_point(
+                task=task,
+                data=data,
+                rest_wavelengths_cm=rest_wavelengths_for_grid,
                 rest_flux=rest_flux,
-                observed_wavelengths_cm=data.wavelengths_cm,
-                phases=data.phases,
-                Kp=float(kp),
-                Vsys=float(vsys),
+                convolved_rest_flux=convolved_flux_for_grid,
+                config=config,
+                parameters=parameters,
                 resolving_power=resolving_power,
-                barycentric_velocities=data.barycentric_velocities,
-                velocity_config=velocity_cfg,
+                velocity_cfg=velocity_cfg,
+                fit_amp=fit_amp,
             )
-            prepared = prepare_model_like_data(cube, config, data_mask=data.good_mask)
-            ll, amp = compute_log_likelihood(
+            store_result(result)
+    else:
+        start_method = grid_cfg.get("multiprocessing_start_method", None)
+        ctx = mp.get_context(str(start_method)) if start_method not in {None, "", "default"} else mp.get_context()
+        chunksize = int(grid_cfg.get("chunksize", 1))
+        if chunksize < 1:
+            raise ValueError("grid.chunksize must be >= 1.")
+        if logger is not None:
+            logger.info(
+                "Starting multiprocessing grid with %d workers, start_method=%s, chunksize=%d",
+                n_jobs,
+                ctx.get_start_method(),
+                chunksize,
+            )
+        with ctx.Pool(
+            processes=n_jobs,
+            initializer=_init_grid_worker,
+            initargs=(
                 data,
-                prepared,
-                log_model_scale=float(parameters.get("log_model_scale", 0.0)),
-                fit_amplitude_analytically=fit_amp,
-            )
-            loglike[k_index, v_index] = ll
-            amplitude[k_index, v_index] = amp
+                rest_wavelengths_for_grid,
+                rest_flux,
+                convolved_flux_for_grid,
+                config,
+                parameters,
+                resolving_power,
+                velocity_cfg,
+                fit_amp,
+            ),
+        ) as pool:
+            for result in pool.imap_unordered(_evaluate_grid_point_worker, tasks, chunksize=chunksize):
+                store_result(result)
+
+    if logger is not None:
+        logger.info("Finished Kp-Vsys grid in %.3fs", time.perf_counter() - grid_start)
 
     best_flat = int(np.nanargmax(loglike))
     best_k, best_v = np.unravel_index(best_flat, loglike.shape)
@@ -429,6 +613,7 @@ def run_kp_vsys_grid(
         "Vsys_grid": vsys_values,
         "log_likelihood": loglike,
         "amplitude": amplitude,
+        "timings": timings,
         "best": best,
     }
 
@@ -440,6 +625,7 @@ def build_prepared_model_for_parameters(
     config: Mapping[str, Any],
     Kp: float,
     Vsys: float,
+    convolved_rest_flux: Optional[Any] = None,
 ) -> Any:
     """Convenience helper used by smoke tests and fake-signal injection."""
 
@@ -453,6 +639,7 @@ def build_prepared_model_for_parameters(
         resolving_power=float(config.get("instrument", {})["resolving_power"]),
         barycentric_velocities=data.barycentric_velocities,
         velocity_config=config.get("velocity", {}),
+        convolved_rest_flux=convolved_rest_flux,
     )
     return prepare_model_like_data(cube, config, data_mask=data.good_mask)
 
@@ -495,13 +682,15 @@ def save_grid_results(results: Mapping[str, Any], output_npz: Union[str, Path], 
     output_npz.parent.mkdir(parents=True, exist_ok=True)
     output_json.parent.mkdir(parents=True, exist_ok=True)
 
-    np.savez_compressed(
-        output_npz,
-        Kp_grid=results["Kp_grid"],
-        Vsys_grid=results["Vsys_grid"],
-        log_likelihood=results["log_likelihood"],
-        amplitude=results["amplitude"],
-    )
+    arrays = {
+        "Kp_grid": results["Kp_grid"],
+        "Vsys_grid": results["Vsys_grid"],
+        "log_likelihood": results["log_likelihood"],
+        "amplitude": results["amplitude"],
+    }
+    for name, values in results.get("timings", {}).items():
+        arrays[f"timing_{name}"] = values
+    np.savez_compressed(output_npz, **arrays)
     with output_json.open("w", encoding="utf-8") as handle:
         json.dump({"best": results["best"]}, handle, indent=2, sort_keys=True)
 

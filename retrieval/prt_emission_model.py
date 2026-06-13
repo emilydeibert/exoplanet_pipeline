@@ -21,6 +21,7 @@ import importlib.metadata
 import logging
 import math
 import os
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence, Tuple, Union
 
@@ -29,6 +30,15 @@ MICRON_TO_CM = 1.0e-4
 NM_TO_CM = 1.0e-7
 ANGSTROM_TO_CM = 1.0e-8
 R_JUP_CM = 7.1492e9
+
+
+@dataclass
+class ConvolvedModel:
+    """Instrumentally convolved rest-frame model cached for grid evaluation."""
+
+    wavelengths_cm: Any
+    flux: Any
+    resolving_power: float
 
 
 def require_numpy():
@@ -686,6 +696,23 @@ def convolve_to_resolution(
     return gaussian_filter1d(flux, sigma=sigma_pixels, mode="nearest")
 
 
+def build_convolved_model(
+    wavelengths_cm: Any,
+    flux: Any,
+    resolving_power: float,
+) -> ConvolvedModel:
+    """Convolve a rest-frame spectrum once for reuse across Kp/Vsys points."""
+
+    np = require_numpy()
+    wavelengths_cm = np.asarray(wavelengths_cm, dtype=float)
+    convolved_flux = convolve_to_resolution(wavelengths_cm, flux, resolving_power)
+    return ConvolvedModel(
+        wavelengths_cm=wavelengths_cm,
+        flux=np.asarray(convolved_flux, dtype=float),
+        resolving_power=float(resolving_power),
+    )
+
+
 def rebin_spectrum(wavelengths_cm: Any, flux: Any, target_wavelengths_cm: Any) -> Any:
     """Linearly interpolate a model spectrum onto any target wavelength shape."""
 
@@ -753,10 +780,12 @@ def shifted_model_cube(
     resolving_power: float,
     barycentric_velocities: Optional[Any] = None,
     velocity_config: Optional[Mapping[str, Any]] = None,
+    convolved_rest_flux: Optional[Any] = None,
 ) -> Any:
     """Convolve, Doppler shift, and rebin a rest-frame model for all exposures."""
 
     np = require_numpy()
+    rest_wave = np.asarray(rest_wavelengths_cm, dtype=float)
     obs_wave = np.asarray(observed_wavelengths_cm, dtype=float)
     phases = np.asarray(phases, dtype=float)
 
@@ -778,22 +807,33 @@ def shifted_model_cube(
         barycentric_sign=float(velocity_config.get("barycentric_sign", -1.0)),
     )
 
-    convolved = convolve_to_resolution(rest_wavelengths_cm, rest_flux, resolving_power)
+    if convolved_rest_flux is None:
+        convolved = convolve_to_resolution(rest_wave, rest_flux, resolving_power)
+    else:
+        convolved = np.asarray(convolved_rest_flux, dtype=float)
+        if convolved.shape != rest_wave.shape:
+            raise ValueError(
+                "convolved_rest_flux must have the same shape as rest_wavelengths_cm."
+            )
+
     n_orders, n_pixels = obs_wave.shape
     n_exp = phases.size
     cube = np.full((n_orders, n_exp, n_pixels), np.nan, dtype=float)
 
+    dopplers = 1.0 + velocities / C_KM_S
+    if np.any(dopplers <= 0):
+        bad = velocities[dopplers <= 0]
+        raise ValueError(f"Non-physical Doppler factor for velocities {bad} km/s.")
+
     for order_index in range(n_orders):
-        for exp_index, velocity in enumerate(velocities):
-            doppler = 1.0 + velocity / C_KM_S
-            if doppler <= 0:
-                raise ValueError(f"Non-physical Doppler factor for velocity {velocity} km/s.")
-            rest_grid_for_observed_pixels = obs_wave[order_index] / doppler
-            cube[order_index, exp_index] = rebin_spectrum(
-                rest_wavelengths_cm,
-                convolved,
-                rest_grid_for_observed_pixels,
-            )
+        rest_grid_for_observed_pixels = obs_wave[order_index][None, :] / dopplers[:, None]
+        cube[order_index] = np.interp(
+            rest_grid_for_observed_pixels,
+            rest_wave,
+            convolved,
+            left=np.nan,
+            right=np.nan,
+        )
 
     return cube
 

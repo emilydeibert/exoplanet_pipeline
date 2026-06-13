@@ -153,6 +153,9 @@ grid:
   vsys_max: 20.0
   vsys_step: 1.0
   fit_amplitude_analytically: true
+  n_jobs: 1
+  chunksize: 1
+  multiprocessing_start_method: null
 
 sampler:
   # Keep false until the Fe smoke test and Kp-Vsys map recover the real or

@@ -111,6 +111,32 @@ python -m retrieval.run_fe_kp_vsys_grid \
   --config retrieval/configs/mascara1b_fe_smoketest.yaml
 ```
 
+Tiny 3x3 fake-injection timing grid, useful before a full run:
+
+```bash
+python -m retrieval.run_fe_kp_vsys_grid \
+  --config retrieval/configs/mascara1b_fe_smoketest.yaml \
+  --inject-fake \
+  --tiny-grid \
+  --n-jobs 1
+```
+
+Full Fe Kp-Vsys grid in serial debugging mode:
+
+```bash
+python -m retrieval.run_fe_kp_vsys_grid \
+  --config retrieval/configs/mascara1b_fe_smoketest.yaml \
+  --n-jobs 1
+```
+
+Parallel Fe grid on a workstation or Compute Canada node:
+
+```bash
+python -m retrieval.run_fe_kp_vsys_grid \
+  --config retrieval/configs/mascara1b_fe_smoketest.yaml \
+  --n-jobs 4
+```
+
 Injected fake-signal recovery:
 
 ```bash
@@ -132,6 +158,30 @@ python -m retrieval.run_fe_sampler \
 
 Outputs go to `retrieval/results/mascara1b_fe_smoketest/` by default.
 
+### Kp-Vsys Grid Performance
+
+The Fe grid keeps the same velocity convention, BERV handling, wavelength
+units, preparation method, and likelihood definition as the serial prototype.
+The optimized grid avoids repeated work by caching the instrumentally convolved
+rest-frame model once and reusing it for every Kp/Vsys point.  It also
+vectorizes exposure shifting/rebinning within each order.
+
+Use `--n-jobs 1` for serial debugging.  Use `--n-jobs N` to parallelize over
+Kp/Vsys grid points with Python multiprocessing.  The config equivalents live
+under `grid.n_jobs`, `grid.chunksize`, and `grid.multiprocessing_start_method`.
+
+Each grid point logs timings for:
+
+```text
+shifted_model_cube
+prepare_model_like_data
+compute_log_likelihood
+```
+
+Timing arrays are saved in the output `.npz` with names such as
+`timing_shifted_model_cube`, `timing_prepare_model_like_data`, and
+`timing_compute_log_likelihood`.
+
 ### Compute Canada / Narval
 
 Edit the placeholders in:
@@ -151,5 +201,6 @@ sbatch retrieval/slurm/fe_kp_vsys_grid.slurm
 sbatch retrieval/slurm/fe_only_retrieval.slurm
 ```
 
-The Fe-only retrieval job is intentionally gated in Python and requires the
+The Fe grid SLURM template maps `SLURM_CPUS_PER_TASK` to `--n-jobs`.  The
+Fe-only retrieval job is intentionally gated in Python and requires the
 `--confirm-grid-validated` flag already present in the SLURM template.
