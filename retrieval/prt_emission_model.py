@@ -21,6 +21,7 @@ import importlib.metadata
 import logging
 import math
 import os
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence, Tuple, Union
@@ -838,25 +839,121 @@ def shifted_model_cube(
     return cube
 
 
-def _median_highpass(cube: Any, width_pixels: int) -> Any:
-    np = require_numpy()
-    try:
-        from scipy.ndimage import median_filter
-    except ImportError as exc:  # pragma: no cover - depends on user env
-        raise RuntimeError("SciPy is required for high-pass model preparation.") from exc
-
-    cube = np.asarray(cube, dtype=float)
+def _odd_filter_width(width_pixels: int) -> int:
     width = int(width_pixels)
     if width < 3:
         raise ValueError("highpass_width_pixels must be at least 3.")
     if width % 2 == 0:
         width += 1
+    return width
 
+
+def _fill_nonfinite_for_filter(cube: Any) -> Any:
+    np = require_numpy()
+
+    cube = np.asarray(cube, dtype=float)
     fill = np.nanmedian(cube, axis=2, keepdims=True)
-    filled = np.where(np.isfinite(cube), cube, fill)
-    continuum = median_filter(filled, size=(1, 1, width), mode="nearest")
+    return np.where(np.isfinite(cube), cube, fill)
+
+
+def _median_continuum_scipy_reference(cube: Any, width_pixels: int) -> Any:
+    """Reference median continuum: the original scipy.ndimage implementation."""
+
+    np = require_numpy()
+    try:
+        from scipy.ndimage import median_filter
+    except ImportError as exc:  # pragma: no cover - depends on user env
+        raise RuntimeError("SciPy is required for median high-pass preparation.") from exc
+
+    width = _odd_filter_width(width_pixels)
+    filled = _fill_nonfinite_for_filter(cube)
+    return median_filter(filled, size=(1, 1, width), mode="nearest")
+
+
+def _median_continuum_bottleneck(cube: Any, width_pixels: int) -> Any:
+    """Exact centered moving median using bottleneck, with nearest-edge padding."""
+
+    np = require_numpy()
+    try:
+        import bottleneck as bn
+    except ImportError as exc:  # pragma: no cover - optional dependency
+        raise RuntimeError(
+            "bottleneck is required for preparation.median_filter_backend='bottleneck'. "
+            "Install bottleneck or use median_filter_backend='scipy_reference'."
+        ) from exc
+
+    width = _odd_filter_width(width_pixels)
+    radius = width // 2
+    filled = _fill_nonfinite_for_filter(cube)
+    flat = filled.reshape(-1, filled.shape[-1])
+    padded = np.pad(flat, ((0, 0), (radius, radius)), mode="edge")
+    moved = bn.move_median(padded, window=width, min_count=width, axis=1)
+    continuum = moved[:, width - 1 : width - 1 + flat.shape[1]]
+    return continuum.reshape(filled.shape)
+
+
+def _median_continuum(cube: Any, width_pixels: int, backend: str = "auto") -> Any:
+    backend = str(backend).lower()
+
+    if backend in {"auto", "bottleneck"}:
+        try:
+            return _median_continuum_bottleneck(cube, width_pixels)
+        except RuntimeError:
+            if backend == "bottleneck":
+                raise
+
+    if backend in {"auto", "scipy", "scipy_reference", "ndimage"}:
+        return _median_continuum_scipy_reference(cube, width_pixels)
+
+    raise ValueError(
+        "preparation.median_filter_backend must be auto, bottleneck, or scipy_reference."
+    )
+
+
+def _median_highpass(cube: Any, width_pixels: int, backend: str = "auto") -> Any:
+    np = require_numpy()
+
+    cube = np.asarray(cube, dtype=float)
+    continuum = _median_continuum(cube, width_pixels, backend=backend)
     continuum = np.where(np.isfinite(continuum) & (continuum != 0), continuum, np.nan)
     return cube / continuum - 1.0
+
+
+def _gaussian_highpass(cube: Any, width_pixels: int) -> Any:
+    np = require_numpy()
+    try:
+        from scipy.ndimage import gaussian_filter1d
+    except ImportError as exc:  # pragma: no cover - depends on user env
+        raise RuntimeError("SciPy is required for gaussian high-pass preparation.") from exc
+
+    width = _odd_filter_width(width_pixels)
+    sigma = width / 2.354820045
+    cube = np.asarray(cube, dtype=float)
+    filled = _fill_nonfinite_for_filter(cube)
+    continuum = gaussian_filter1d(filled, sigma=sigma, axis=2, mode="nearest")
+    continuum = np.where(np.isfinite(continuum) & (continuum != 0), continuum, np.nan)
+    return cube / continuum - 1.0
+
+
+def _uniform_highpass(cube: Any, width_pixels: int) -> Any:
+    np = require_numpy()
+    try:
+        from scipy.ndimage import uniform_filter1d
+    except ImportError as exc:  # pragma: no cover - depends on user env
+        raise RuntimeError("SciPy is required for uniform high-pass preparation.") from exc
+
+    width = _odd_filter_width(width_pixels)
+    cube = np.asarray(cube, dtype=float)
+    filled = _fill_nonfinite_for_filter(cube)
+    continuum = uniform_filter1d(filled, size=width, axis=2, mode="nearest")
+    continuum = np.where(np.isfinite(continuum) & (continuum != 0), continuum, np.nan)
+    return cube / continuum - 1.0
+
+
+def _relative_flux_to_delta_mag(relative: Any) -> Any:
+    np = require_numpy()
+    flux_ratio = np.clip(1.0 + relative, 1.0e-300, None)
+    return -2.5 * np.log10(flux_ratio)
 
 
 def prepare_model_like_data(
@@ -877,19 +974,37 @@ def prepare_model_like_data(
     prep_cfg = config.get("preparation", {})
     method = str(prep_cfg.get("method", "median_highpass_delta_mag"))
     width = int(prep_cfg.get("highpass_width_pixels", 601))
+    median_backend = str(prep_cfg.get("median_filter_backend", "auto"))
 
     if method in {"none", "raw"}:
         prepared = model_cube.copy()
-    elif method in {"median_highpass", "median_highpass_relative_flux"}:
-        prepared = _median_highpass(model_cube, width)
-    elif method == "median_highpass_delta_mag":
-        relative = _median_highpass(model_cube, width)
-        flux_ratio = np.clip(1.0 + relative, 1.0e-300, None)
-        prepared = -2.5 * np.log10(flux_ratio)
+    elif method in {
+        "median_highpass",
+        "median_highpass_relative_flux",
+        "median_highpass_exact",
+        "median_highpass_relative_flux_exact",
+    }:
+        prepared = _median_highpass(model_cube, width, backend=median_backend)
+    elif method in {"median_highpass_delta_mag", "median_highpass_delta_mag_exact"}:
+        relative = _median_highpass(model_cube, width, backend=median_backend)
+        prepared = _relative_flux_to_delta_mag(relative)
+    elif method == "median_highpass_delta_mag_scipy_reference":
+        relative = _median_highpass(model_cube, width, backend="scipy_reference")
+        prepared = _relative_flux_to_delta_mag(relative)
+    elif method == "median_highpass_delta_mag_bottleneck":
+        relative = _median_highpass(model_cube, width, backend="bottleneck")
+        prepared = _relative_flux_to_delta_mag(relative)
+    elif method == "gaussian_highpass_delta_mag_fast":
+        relative = _gaussian_highpass(model_cube, width)
+        prepared = _relative_flux_to_delta_mag(relative)
+    elif method == "uniform_highpass_delta_mag_fast":
+        relative = _uniform_highpass(model_cube, width)
+        prepared = _relative_flux_to_delta_mag(relative)
     else:
         raise ValueError(
-            "Unknown preparation.method. Use none, median_highpass, "
-            "median_highpass_relative_flux, or median_highpass_delta_mag."
+            "Unknown preparation.method. Use none, median_highpass_delta_mag_exact, "
+            "median_highpass_delta_mag_scipy_reference, "
+            "gaussian_highpass_delta_mag_fast, or uniform_highpass_delta_mag_fast."
         )
 
     mask = np.isfinite(prepared)
@@ -908,6 +1023,69 @@ def prepare_model_like_data(
 
     prepared = np.where(mask, prepared, np.nan)
     return prepared
+
+
+def benchmark_prepare_model_like_data(
+    model_cube: Any,
+    config: Mapping[str, Any],
+    data_mask: Optional[Any] = None,
+    methods: Optional[Sequence[str]] = None,
+) -> list[dict[str, Any]]:
+    """Time preparation methods and compare them to the SciPy median reference."""
+
+    np = require_numpy()
+    methods = list(methods or [
+        "median_highpass_delta_mag_scipy_reference",
+        str(config.get("preparation", {}).get("method", "median_highpass_delta_mag_exact")),
+    ])
+
+    reference_config = dict(config)
+    reference_config["preparation"] = dict(config.get("preparation", {}))
+    reference_config["preparation"]["method"] = "median_highpass_delta_mag_scipy_reference"
+
+    start = time.perf_counter()
+    reference = prepare_model_like_data(model_cube, reference_config, data_mask=data_mask)
+    reference_elapsed = time.perf_counter() - start
+
+    results: list[dict[str, Any]] = [
+        {
+            "method": "median_highpass_delta_mag_scipy_reference",
+            "seconds": float(reference_elapsed),
+            "max_abs_delta_vs_reference": 0.0,
+            "rms_delta_vs_reference": 0.0,
+        }
+    ]
+
+    for method in methods:
+        if method == "median_highpass_delta_mag_scipy_reference":
+            continue
+        trial_config = dict(config)
+        trial_config["preparation"] = dict(config.get("preparation", {}))
+        trial_config["preparation"]["method"] = method
+
+        start = time.perf_counter()
+        prepared = prepare_model_like_data(model_cube, trial_config, data_mask=data_mask)
+        elapsed = time.perf_counter() - start
+
+        delta = prepared - reference
+        finite = np.isfinite(delta)
+        if finite.any():
+            max_abs = float(np.nanmax(np.abs(delta[finite])))
+            rms = float(np.sqrt(np.nanmean(delta[finite] * delta[finite])))
+        else:
+            max_abs = float("nan")
+            rms = float("nan")
+
+        results.append(
+            {
+                "method": str(method),
+                "seconds": float(elapsed),
+                "max_abs_delta_vs_reference": max_abs,
+                "rms_delta_vs_reference": rms,
+            }
+        )
+
+    return results
 
 
 def wavelength_bounds_for_model(

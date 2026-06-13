@@ -121,6 +121,16 @@ python -m retrieval.run_fe_kp_vsys_grid \
   --n-jobs 1
 ```
 
+Preparation-filter benchmark on one shifted model cube:
+
+```bash
+python -m retrieval.run_fe_kp_vsys_grid \
+  --config retrieval/configs/mascara1b_fe_smoketest.yaml \
+  --tiny-grid \
+  --benchmark-preparation \
+  --n-jobs 1
+```
+
 Full Fe Kp-Vsys grid in serial debugging mode:
 
 ```bash
@@ -181,6 +191,49 @@ compute_log_likelihood
 Timing arrays are saved in the output `.npz` with names such as
 `timing_shifted_model_cube`, `timing_prepare_model_like_data`, and
 `timing_compute_log_likelihood`.
+
+### Model Preparation Methods
+
+The default model-preparation method is now:
+
+```yaml
+preparation:
+  method: median_highpass_delta_mag_exact
+  highpass_width_pixels: 601
+  median_filter_backend: auto
+```
+
+This preserves the previous median-filter science behavior.  With
+`median_filter_backend: auto`, the code uses `bottleneck.move_median` when
+available and falls back to the original `scipy.ndimage.median_filter`
+reference.  The literal old reference path remains available as:
+
+```yaml
+preparation:
+  method: median_highpass_delta_mag_scipy_reference
+```
+
+Approximate fast continuum options are available for testing:
+
+```yaml
+preparation:
+  method: gaussian_highpass_delta_mag_fast
+```
+
+or:
+
+```yaml
+preparation:
+  method: uniform_highpass_delta_mag_fast
+```
+
+Use `--benchmark-preparation` to compare each method against the SciPy median
+reference.  The benchmark writes `preparation_benchmark.json` and logs elapsed
+time, maximum absolute difference, and RMS difference relative to the reference.
+
+Keep the fake-injection grid as the regression check after changing preparation
+methods.  For the current Fe injection test, the recovered peak should remain
+near `Kp=198`, `Vsys=-2`, with amplitude about `0.001`.
 
 ### Compute Canada / Narval
 

@@ -123,10 +123,18 @@ velocity:
 preparation:
   # Approximation to the preparation applied to the data.  This is not a full
   # SYSREM transfer-function correction.
-  method: median_highpass_delta_mag
+  # Exact median mode preserves the previous science behavior.  With
+  # median_filter_backend: auto, bottleneck is used when installed and scipy is
+  # kept as the reference fallback.
+  method: median_highpass_delta_mag_exact
   highpass_width_pixels: 601
+  median_filter_backend: auto
   remove_exposure_mean: true
   standardize_per_exposure: true
+  benchmark_methods:
+    - median_highpass_delta_mag_exact
+    - gaussian_highpass_delta_mag_fast
+    - uniform_highpass_delta_mag_fast
 
 priors:
   Kp: [150.0, 240.0]

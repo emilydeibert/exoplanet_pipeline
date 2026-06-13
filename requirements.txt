@@ -4,6 +4,7 @@ meson-python
 ninja
 numpy
 scipy
+bottleneck
 matplotlib
 astropy
 PyYAML

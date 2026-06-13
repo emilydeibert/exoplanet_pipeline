@@ -17,6 +17,7 @@ from retrieval.likelihood import (
 )
 from retrieval.plotting import save_best_fit_model_plot, save_kp_vsys_likelihood_plot
 from retrieval.prt_emission_model import (
+    benchmark_prepare_model_like_data,
     build_convolved_model,
     generate_prt_emission_model,
     load_yaml_config,
@@ -24,6 +25,7 @@ from retrieval.prt_emission_model import (
     parameters_from_config,
     require_numpy,
     setup_logging,
+    shifted_model_cube,
 )
 
 
@@ -47,6 +49,17 @@ def parse_args() -> argparse.Namespace:
         "--tiny-grid",
         action="store_true",
         help="Run a 3x3 grid around expected_detection for quick timing/debug checks.",
+    )
+    parser.add_argument(
+        "--benchmark-preparation",
+        action="store_true",
+        help="Time preparation methods on one shifted model cube before running the grid.",
+    )
+    parser.add_argument(
+        "--benchmark-preparation-methods",
+        nargs="+",
+        default=None,
+        help="Preparation methods to compare against the SciPy median reference.",
     )
     return parser.parse_args()
 
@@ -108,6 +121,50 @@ def main() -> None:
         convolved_model.resolving_power,
         time.perf_counter() - convolve_start,
     )
+
+    if args.benchmark_preparation:
+        benchmark_methods = args.benchmark_preparation_methods
+        if benchmark_methods is None:
+            benchmark_methods = list(
+                config.get("preparation", {}).get(
+                    "benchmark_methods",
+                    [
+                        config.get("preparation", {}).get("method", "median_highpass_delta_mag_exact"),
+                        "gaussian_highpass_delta_mag_fast",
+                        "uniform_highpass_delta_mag_fast",
+                    ],
+                )
+            )
+
+        benchmark_cube = shifted_model_cube(
+            rest_wavelengths_cm=rest_wave_cm,
+            rest_flux=rest_flux,
+            observed_wavelengths_cm=data.wavelengths_cm,
+            phases=data.phases,
+            Kp=parameters["Kp"],
+            Vsys=parameters["Vsys"],
+            resolving_power=float(config["instrument"]["resolving_power"]),
+            barycentric_velocities=data.barycentric_velocities,
+            velocity_config=config.get("velocity", {}),
+            convolved_rest_flux=convolved_model.flux,
+        )
+        benchmark_results = benchmark_prepare_model_like_data(
+            benchmark_cube,
+            config,
+            data_mask=data.good_mask,
+            methods=benchmark_methods,
+        )
+        for row in benchmark_results:
+            logger.info(
+                "Preparation benchmark method=%s seconds=%.3f "
+                "max_abs_delta_vs_reference=%.6e rms_delta_vs_reference=%.6e",
+                row["method"],
+                row["seconds"],
+                row["max_abs_delta_vs_reference"],
+                row["rms_delta_vs_reference"],
+            )
+        with (output_dir / "preparation_benchmark.json").open("w", encoding="utf-8") as handle:
+            json.dump(benchmark_results, handle, indent=2, sort_keys=True)
 
     injection_summary = None
     if args.inject_fake:

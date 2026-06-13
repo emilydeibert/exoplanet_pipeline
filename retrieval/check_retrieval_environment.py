@@ -17,6 +17,7 @@ from retrieval.prt_emission_model import configured_prt_input_data_path
 PACKAGE_CHECKS = [
     ("numpy", "numpy", True),
     ("scipy", "scipy", True),
+    ("bottleneck", "Bottleneck", False),
     ("matplotlib", "matplotlib", True),
     ("astropy", "astropy", True),
     ("yaml", "PyYAML", True),
