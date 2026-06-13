@@ -23,7 +23,7 @@ planet:
   mid_transit_bjd_tdb: null
 
 data:
-  wavelength_unit: micron
+  wavelength_unit: nm 
   uncertainties_are_variance: false
   time_dependent_wavelengths: require_static
   wavelength_static_rtol: 1.0e-8
