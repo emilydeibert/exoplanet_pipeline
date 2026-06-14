@@ -104,6 +104,20 @@ python -m retrieval.run_prt_smoketest \
   --order 0
 ```
 
+Export the current pRT model into the legacy cross-correlation model format:
+
+```bash
+python -m retrieval.export_prt_model_for_xcorr \
+  --config retrieval/configs/mascara1b_fe_smoketest.yaml \
+  --output /path/to/models/Fe_pRT_model.npy \
+  --wavelength-min-micron 0.383 \
+  --wavelength-max-micron 1.0
+```
+
+The exported `.npy` has two columns: wavelength in Angstrom and raw pRT
+emission flux.  This matches the existing xcorr loader, which divides column 0
+by 10 to get nm before convolution and `template_to_dmag`.
+
 Fe-only Kp-Vsys grid:
 
 ```bash
