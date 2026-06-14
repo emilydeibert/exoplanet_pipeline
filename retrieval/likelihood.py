@@ -10,6 +10,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence, Tuple, Union
 
+from .model_processing import prepare_rest_model_for_representation
 from .prt_emission_model import (
     MICRON_TO_CM,
     build_convolved_model,
@@ -805,6 +806,14 @@ def run_sampler(
                 atmosphere=atmosphere,
                 logger=None,
             )
+            rest_model = prepare_rest_model_for_representation(
+                rest_wave,
+                rest_flux,
+                config,
+                logger=None,
+            )
+            rest_wave = rest_model.wavelengths_cm
+            rest_flux = rest_model.flux
             cube = shifted_model_cube(
                 rest_wavelengths_cm=rest_wave,
                 rest_flux=rest_flux,
@@ -880,6 +889,14 @@ def run_sampler(
             atmosphere=atmosphere,
             logger=None,
         )
+        rest_model = prepare_rest_model_for_representation(
+            rest_wave,
+            rest_flux,
+            config,
+            logger=None,
+        )
+        rest_wave = rest_model.wavelengths_cm
+        rest_flux = rest_model.flux
         best_cube = shifted_model_cube(
             rest_wavelengths_cm=rest_wave,
             rest_flux=rest_flux,

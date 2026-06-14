@@ -4,7 +4,16 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-from typing import Any, Optional
+
+from retrieval.model_processing import (
+    configured_primary_species,
+    default_vacuum_to_air_for_species,
+    is_strictly_monotonic,
+    log_array_diagnostics,
+    process_prt_model_for_xcorr,
+    resolve_bool_option,
+    save_xy_plot,
+)
 
 from retrieval.prt_emission_model import (
     ANGSTROM_TO_CM,
@@ -14,29 +23,6 @@ from retrieval.prt_emission_model import (
     require_numpy,
     setup_logging,
 )
-
-
-VACUUM_TO_AIR_DEFAULT_BY_SPECIES = {
-    "Fe": True,
-    "TiO": True,
-    "Ti": True,
-    "Ti+": False,
-    "Fe+": False,
-    "V": True,
-    "V+": True,
-    "VO": True,
-    "Ca": True,
-    "Ca+": True,
-    "Cr": True,
-    "FeH": True,
-    "K": True,
-    "OH": True,
-    "Mg": True,
-    "Si": True,
-    "Al": True,
-    "CaH": True,
-    "Na": True,
-}
 
 
 def parse_args() -> argparse.Namespace:
@@ -104,198 +90,6 @@ def wavelength_bounds_from_args(config: dict, args: argparse.Namespace) -> list[
     return [wavelength_min, wavelength_max]
 
 
-def configured_primary_species(config: dict[str, Any]) -> str:
-    species = config.get("species", {}).get("line_species", ["Fe"])
-    if not species:
-        return "Fe"
-    return str(species[0])
-
-
-def resolve_bool_option(value: str, default: bool) -> bool:
-    if value == "auto":
-        return bool(default)
-    if value == "true":
-        return True
-    if value == "false":
-        return False
-    raise ValueError(f"Unknown boolean option value {value!r}.")
-
-
-def vac2air(vacwave_angstrom: Any) -> Any:
-    """Convert vacuum wavelengths in Angstrom to air wavelengths.
-
-    This reproduces the function in ``generateModels_original.py``.
-    """
-
-    np = require_numpy()
-    vacwave = np.asarray(vacwave_angstrom, dtype=float)
-    s = 1.0e4 / vacwave
-    n = 1.0 + 8.34254e-5 + 2.406147e-2 / (130.0 - s**2) + 1.5998e-4 / (38.9 - s**2)
-    return vacwave / n
-
-
-def stellar_planck_hz(wavelengths_cm: Any, stellar_temperature: float) -> Any:
-    """Compute the stellar Planck function following the old ``star()`` helper."""
-
-    np = require_numpy()
-    try:
-        from petitRADTRANS import physics as phys
-    except ImportError as exc:  # pragma: no cover - depends on user env
-        raise RuntimeError("petitRADTRANS is required for the stellar Planck function.") from exc
-
-    wavelengths_cm = np.asarray(wavelengths_cm, dtype=float)
-    frequencies_hz = phys.wavelength2frequency(wavelengths_cm)
-    return phys.planck_function_hz(float(stellar_temperature), frequencies_hz)
-
-
-def stellar_radius_rjup(stellar_radius_rsun: float) -> float:
-    """Convert stellar radius from Rsun to Rjup using the old astropy convention."""
-
-    try:
-        from astropy import units as u
-    except ImportError as exc:  # pragma: no cover - depends on user env
-        raise RuntimeError("Astropy is required for stellar radius conversion.") from exc
-
-    return (float(stellar_radius_rsun) * u.R_sun).to(u.R_jupiter).value
-
-
-def remove_env(wave: Any, spec: Any, px: int, order: int) -> Any:
-    """Remove the lower envelope using the old model-generation algorithm."""
-
-    np = require_numpy()
-    try:
-        from scipy.stats import binned_statistic
-    except ImportError as exc:  # pragma: no cover - depends on user env
-        raise RuntimeError("SciPy is required for envelope removal.") from exc
-
-    wave = np.asarray(wave, dtype=float)
-    spec = np.asarray(spec, dtype=float)
-    if int(px) < 2:
-        raise ValueError("--envelope-pixels must be at least 2.")
-    if int(order) < 0:
-        raise ValueError("--envelope-poly-order must be >= 0.")
-
-    binned = binned_statistic(wave, spec, statistic="min", bins=int(px))
-    bin_mids = binned[1][1:] - (binned[1][1] - binned[1][0]) / 2.0
-    finite = np.isfinite(bin_mids) & np.isfinite(binned[0])
-    if finite.sum() <= int(order):
-        raise ValueError(
-            "Not enough finite lower-envelope bins for the requested polynomial order. "
-            f"finite_bins={finite.sum()}, order={order}."
-        )
-    fit = np.polyfit(bin_mids[finite], binned[0][finite], int(order))
-    env = np.polyval(fit, wave)
-    return spec - env
-
-
-def finite_stats(values: Any) -> dict[str, float]:
-    np = require_numpy()
-    values = np.asarray(values, dtype=float)
-    finite = np.isfinite(values)
-    if not finite.any():
-        return {
-            "min": float("nan"),
-            "median": float("nan"),
-            "max": float("nan"),
-            "finite_fraction": 0.0,
-        }
-    return {
-        "min": float(np.nanmin(values[finite])),
-        "median": float(np.nanmedian(values[finite])),
-        "max": float(np.nanmax(values[finite])),
-        "finite_fraction": float(np.sum(finite) / values.size),
-    }
-
-
-def is_strictly_monotonic(values: Any) -> bool:
-    np = require_numpy()
-    values = np.asarray(values, dtype=float)
-    finite_values = values[np.isfinite(values)]
-    if finite_values.size < 2:
-        return False
-    diffs = np.diff(finite_values)
-    return bool(np.all(diffs > 0) or np.all(diffs < 0))
-
-
-def save_xy_plot(
-    wavelength_angstrom: Any,
-    values: Any,
-    filename: Path,
-    ylabel: str,
-    title: str,
-) -> None:
-    try:
-        import matplotlib.pyplot as plt
-    except ImportError as exc:  # pragma: no cover - depends on user env
-        raise RuntimeError("Matplotlib is required for export diagnostic plots.") from exc
-
-    fig, ax = plt.subplots(figsize=(10, 4))
-    ax.plot(wavelength_angstrom, values, lw=0.7)
-    ax.set_xlabel("Wavelength [Angstrom]")
-    ax.set_ylabel(ylabel)
-    ax.set_title(title)
-    fig.tight_layout()
-    fig.savefig(filename, dpi=250)
-    plt.close(fig)
-
-
-def log_array_diagnostics(logger: Any, label: str, values: Any) -> None:
-    stats = finite_stats(values)
-    logger.info(
-        "%s min/median/max = %.6e / %.6e / %.6e; finite_fraction = %.6f",
-        label,
-        stats["min"],
-        stats["median"],
-        stats["max"],
-        stats["finite_fraction"],
-    )
-
-
-def build_xcorr_processed_export(
-    wavelengths_cm: Any,
-    flux: Any,
-    args: argparse.Namespace,
-    config: dict[str, Any],
-    logger: Any,
-) -> tuple[Any, Any, Optional[Any], bool, bool]:
-    """Return wavelength_Angstrom, processed template, contrast, conversion flags."""
-
-    np = require_numpy()
-    species = configured_primary_species(config)
-    default_vacuum_to_air = VACUUM_TO_AIR_DEFAULT_BY_SPECIES.get(species, True)
-    vacuum_to_air = resolve_bool_option(args.vacuum_to_air, default_vacuum_to_air)
-    remove_envelope = resolve_bool_option(args.remove_envelope, True)
-
-    planck = stellar_planck_hz(wavelengths_cm, args.stellar_temperature)
-    radius_rjup = stellar_radius_rjup(args.stellar_radius_rsun)
-    contrast = np.asarray(flux, dtype=float) / (planck * radius_rjup**2)
-
-    wavelengths_angstrom_vacuum = np.asarray(wavelengths_cm, dtype=float) / ANGSTROM_TO_CM
-    wavelengths_micron_vacuum = np.asarray(wavelengths_cm, dtype=float) / 1.0e-4
-    if remove_envelope:
-        processed = remove_env(
-            wavelengths_micron_vacuum,
-            contrast,
-            args.envelope_pixels,
-            args.envelope_poly_order,
-        )
-    else:
-        processed = contrast.copy()
-
-    if vacuum_to_air:
-        wavelengths_angstrom = vac2air(wavelengths_angstrom_vacuum)
-    else:
-        wavelengths_angstrom = wavelengths_angstrom_vacuum
-
-    logger.info("xcorr_processed species=%s", species)
-    logger.info("stellar_temperature=%.3f K", float(args.stellar_temperature))
-    logger.info("stellar_radius=%.6f Rsun = %.6f Rjup", float(args.stellar_radius_rsun), radius_rjup)
-    logger.info("vacuum_to_air=%s", vacuum_to_air)
-    logger.info("remove_envelope=%s", remove_envelope)
-    logger.info("envelope_pixels=%d envelope_poly_order=%d", args.envelope_pixels, args.envelope_poly_order)
-    return wavelengths_angstrom, processed, contrast, vacuum_to_air, remove_envelope
-
-
 def main() -> None:
     args = parse_args()
     np = require_numpy()
@@ -347,19 +141,27 @@ def main() -> None:
         export_values = flux
         processed_for_stats = flux
     else:
-        (
-            wavelengths_angstrom,
-            export_values,
-            contrast,
-            _vacuum_to_air,
-            _remove_envelope,
-        ) = build_xcorr_processed_export(
+        species = configured_primary_species(config)
+        vacuum_to_air = resolve_bool_option(
+            args.vacuum_to_air,
+            default_vacuum_to_air_for_species(species),
+        )
+        remove_envelope = resolve_bool_option(args.remove_envelope, True)
+        processed_model = process_prt_model_for_xcorr(
             wavelengths_cm=wavelengths_cm,
             flux=flux,
-            args=args,
-            config=config,
+            species=species,
+            stellar_temperature=float(args.stellar_temperature),
+            stellar_radius_rsun=float(args.stellar_radius_rsun),
+            vacuum_to_air=vacuum_to_air,
+            remove_envelope=remove_envelope,
+            envelope_pixels=int(args.envelope_pixels),
+            envelope_poly_order=int(args.envelope_poly_order),
             logger=logger,
         )
+        wavelengths_angstrom = processed_model.wavelength_angstrom
+        export_values = processed_model.template
+        contrast = processed_model.contrast
         processed_for_stats = export_values
 
         contrast_plot_path = output_path.with_name(f"{output_path.stem}_contrast_with_continuum.png")

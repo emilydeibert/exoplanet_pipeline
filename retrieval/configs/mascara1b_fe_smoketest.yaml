@@ -89,10 +89,21 @@ species:
 
 model:
   mode: emission
+  # raw_flux preserves the original retrieval/grid behavior.  Set this to
+  # xcorr_processed to use the same rest-frame template representation as the
+  # validated legacy xcorr export.
+  representation: raw_flux
   line_opacity_mode: lbl
   line_by_line_opacity_sampling: 4
   wavelength_boundaries_micron: [0.383, 1.0]
   wavelength_margin_fraction: 0.01
+  xcorr_processed:
+    stellar_temperature: 9360.0
+    stellar_radius_rsun: 1.67
+    vacuum_to_air: auto
+    remove_envelope: true
+    envelope_pixels: 400
+    envelope_poly_order: 4
   use_spectral_model_with_velocity_range: false
   spectral_model_note: >
     This first pass follows the pRT high-resolution SpectralModel architecture

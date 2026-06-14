@@ -15,6 +15,7 @@ from retrieval.likelihood import (
     load_retrieval_data,
     model_wavelength_bounds_for_data,
 )
+from retrieval.model_processing import prepare_rest_model_for_representation
 from retrieval.prt_emission_model import (
     build_convolved_model,
     generate_prt_emission_model,
@@ -308,12 +309,21 @@ def main() -> None:
     log_run_summary(logger, config, parameters, wavelengths_cm=data.wavelengths_cm, mask=data.good_mask)
 
     wavelength_bounds = model_wavelength_bounds_for_data(data, config)
-    rest_wave_cm, rest_flux, metadata = generate_prt_emission_model(
+    rest_wave_cm_raw, rest_flux_raw, metadata = generate_prt_emission_model(
         config=config,
         parameters=parameters,
         wavelength_boundaries_micron=wavelength_bounds,
         logger=logger,
     )
+    rest_model = prepare_rest_model_for_representation(
+        rest_wave_cm_raw,
+        rest_flux_raw,
+        config,
+        logger=logger,
+    )
+    rest_wave_cm = rest_model.wavelengths_cm
+    rest_flux = rest_model.flux
+    metadata = {**metadata, "rest_model_representation": rest_model.metadata}
     logger.info("Model metadata: %s", metadata)
 
     convolved_model = build_convolved_model(

@@ -15,6 +15,7 @@ from retrieval.likelihood import (
     run_kp_vsys_grid,
     save_grid_results,
 )
+from retrieval.model_processing import prepare_rest_model_for_representation
 from retrieval.plotting import save_best_fit_model_plot, save_kp_vsys_likelihood_plot
 from retrieval.prt_emission_model import (
     benchmark_prepare_model_like_data,
@@ -102,12 +103,21 @@ def main() -> None:
     log_run_summary(logger, config, parameters, wavelengths_cm=data.wavelengths_cm, mask=data.good_mask)
 
     wavelength_bounds = model_wavelength_bounds_for_data(data, config)
-    rest_wave_cm, rest_flux, metadata = generate_prt_emission_model(
+    rest_wave_cm_raw, rest_flux_raw, metadata = generate_prt_emission_model(
         config=config,
         parameters=parameters,
         wavelength_boundaries_micron=wavelength_bounds,
         logger=logger,
     )
+    rest_model = prepare_rest_model_for_representation(
+        rest_wave_cm_raw,
+        rest_flux_raw,
+        config,
+        logger=logger,
+    )
+    rest_wave_cm = rest_model.wavelengths_cm
+    rest_flux = rest_model.flux
+    metadata = {**metadata, "rest_model_representation": rest_model.metadata}
     logger.info("Model metadata: %s", metadata)
 
     convolve_start = time.perf_counter()
