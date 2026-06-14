@@ -64,8 +64,8 @@ pressure_grid:
   n_layers: 100
 
 temperature_profile:
-  P_upper_bar: 1.0e-4
-  P_deep_bar: 1.0e-1
+  P_upper_bar: 1.0e-3
+  P_deep_bar: 3.1622776601683795e-2
 
 species:
   line_species: [Fe]
@@ -139,8 +139,8 @@ preparation:
 priors:
   Kp: [150.0, 240.0]
   Vsys: [-30.0, 30.0]
-  T_deep: [2000.0, 5000.0]
-  delta_T_inv: [0.0, 2500.0]
+  T_deep: [1200.0, 3500.0]
+  delta_T_inv: [0.0, 3500.0]
   log10_Fe: [-8.0, -2.0]
   log_model_scale: [-4.0, 4.0]
   allow_negative_delta_T_inv_validation: false
@@ -148,8 +148,8 @@ priors:
 initial_parameters:
   Kp: 198.0
   Vsys: -2.0
-  T_deep: 3000.0
-  delta_T_inv: 800.0
+  T_deep: 2000.0
+  delta_T_inv: 2500.0
   log10_Fe: -4.5
   log_model_scale: 0.0
 
