@@ -147,6 +147,18 @@ python -m retrieval.run_fe_kp_vsys_grid \
   --n-jobs 4
 ```
 
+Per-order likelihood diagnostics at selected velocity points:
+
+```bash
+python -m retrieval.diagnose_fe_order_contributions \
+  --config retrieval/configs/mascara1b_fe_smoketest.yaml \
+  --points "194,0;210,1;220,1" \
+  --output retrieval/results/mascara1b_fe_smoketest/order_diagnostics
+```
+
+The first point is used as the delta-log-likelihood reference when multiple
+points are supplied.
+
 Injected fake-signal recovery:
 
 ```bash
