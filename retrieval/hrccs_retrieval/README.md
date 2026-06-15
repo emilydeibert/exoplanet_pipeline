@@ -85,6 +85,7 @@ python -m retrieval.hrccs_retrieval.run_fe_sampler \
   --fix-kp 198 \
   --fix-vsys -2 \
   --nlive 100 \
+  --n-jobs 1 \
   --output retrieval/results/hrccs_fe_sampler
 ```
 
@@ -101,9 +102,50 @@ python -m retrieval.hrccs_retrieval.run_fe_sampler \
   --fix-kp 198 \
   --fix-vsys -2 \
   --test \
+  --n-jobs 1 \
   --output retrieval/results/hrccs_fe_sampler_test
 ```
 
 Sampling Kp/Vsys is available with `--sample-kp-vsys`, but the recommended
 first run is fixed or tightly constrained velocities because the one-night
 Kp/Vsys ridge can be degenerate.
+
+## Sampler Parallelism
+
+The sampler is serial by default:
+
+```bash
+python -m retrieval.hrccs_retrieval.run_fe_sampler \
+  /path/to/project \
+  --retrieval-config retrieval/configs/mascara1b_fe_smoketest.yaml \
+  --k 4 \
+  --orders 0 \
+  --fix-kp 198 \
+  --fix-vsys -2 \
+  --test \
+  --n-jobs 1 \
+  --output retrieval/results/hrccs_fe_sampler_test_serial
+```
+
+Use multiple dynesty likelihood workers on a single node with `--n-jobs`:
+
+```bash
+python -m retrieval.hrccs_retrieval.run_fe_sampler \
+  /path/to/project \
+  --retrieval-config retrieval/configs/mascara1b_fe_smoketest.yaml \
+  --k 4 \
+  --orders 0 \
+  --fix-kp 198 \
+  --fix-vsys -2 \
+  --test \
+  --n-jobs 4 \
+  --output retrieval/results/hrccs_fe_sampler_test_parallel4
+```
+
+On SLURM, request the same CPU count:
+
+```bash
+#SBATCH --cpus-per-task=4
+
+python -m retrieval.hrccs_retrieval.run_fe_sampler ... --n-jobs 4
+```

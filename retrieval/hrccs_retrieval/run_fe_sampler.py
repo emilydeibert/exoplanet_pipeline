@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import multiprocessing as mp
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from retrieval.prt_emission_model import setup_logging
@@ -13,6 +15,92 @@ from retrieval.prt_emission_model import setup_logging
 from .ccf_likelihood import evaluate_objective
 from .data_loading import block_summary, load_hrccs_data, load_project_modules, parse_int_list, split_cli_list
 from .model_builder import build_prt_xcorr_template, load_retrieval_config_and_parameters, parameters_with_updates
+
+
+_SAMPLER_STATE: dict[str, Any] = {}
+
+
+def init_sampler_worker(state: dict[str, Any]) -> None:
+    """Initialize read-only sampler state in the main process or pool workers."""
+
+    global _SAMPLER_STATE
+    _SAMPLER_STATE = state
+
+
+def prior_transform_from_state(unit_cube: Any) -> Any:
+    """Dynesty prior transform using module-level state for multiprocessing."""
+
+    import numpy as np
+
+    bounds = _SAMPLER_STATE["bounds"]
+    theta = np.empty(len(bounds), dtype=float)
+    for idx, (lo, hi) in enumerate(bounds):
+        theta[idx] = lo + (hi - lo) * unit_cube[idx]
+    return theta
+
+
+def log_likelihood_from_state(theta: Any) -> float:
+    """Evaluate one HRCCS likelihood using module-level state.
+
+    This function is intentionally top-level so Python multiprocessing can
+    pickle it for dynesty's pool workers.
+    """
+
+    import numpy as np
+
+    state = _SAMPLER_STATE
+    updates = {name: float(value) for name, value in zip(state["names"], theta)}
+    parameters = parameters_with_updates(state["initial"], updates)
+    if not state["sample_kp_vsys"]:
+        parameters["Kp"] = float(state["fixed_kp"])
+        parameters["Vsys"] = float(state["fixed_vsys"])
+
+    try:
+        template = build_prt_xcorr_template(
+            state["retrieval_config"],
+            state["exopipe_config"],
+            parameters,
+            logger=None,
+        )
+        result = evaluate_objective(
+            blocks=state["blocks"],
+            F_model=template["F_model"],
+            Kp=parameters["Kp"],
+            Vsys=parameters["Vsys"],
+            objective=state["objective"],
+        )
+        return float(result["objective_value"])
+    except Exception as exc:
+        logger = state.get("logger")
+        if logger is not None:
+            logger.warning("Sampler model evaluation failed: %s", exc)
+        return -np.inf
+
+
+def multiprocessing_context() -> Any:
+    """Return the multiprocessing context used for parallel dynesty calls.
+
+    On Linux/HPC nodes, ``fork`` is the most practical default here because the
+    large shifted data arrays can be inherited copy-on-write by worker
+    processes.  If ``fork`` is unavailable, fall back to Python's platform
+    default context.
+    """
+
+    try:
+        return mp.get_context("fork")
+    except ValueError:  # pragma: no cover - platform dependent
+        return mp.get_context()
+
+
+def dynesty_call_count(results: Any, fallback: int) -> int:
+    """Extract the number of likelihood calls from dynesty results."""
+
+    try:
+        import numpy as np
+
+        return int(np.sum(np.asarray(results.ncall)))
+    except Exception:
+        return int(fallback)
 
 
 def parse_args() -> argparse.Namespace:
@@ -26,6 +114,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", required=True)
     parser.add_argument("--nlive", type=int, default=100)
     parser.add_argument("--maxcall", type=int, default=None)
+    parser.add_argument("--n-jobs", type=int, default=1, help="Parallel dynesty likelihood workers. Use 1 for serial mode.")
     parser.add_argument("--fix-kp", type=float, default=None)
     parser.add_argument("--fix-vsys", type=float, default=None)
     parser.add_argument("--sample-kp-vsys", action="store_true", help="Also sample Kp and Vsys. Default keeps them fixed.")
@@ -64,6 +153,9 @@ def main() -> None:
     logger = setup_logging(output_dir, "fe_hrccs_sampler.log")
     if args.resume:
         logger.warning("--resume was supplied, but checkpoint resume is not implemented yet; starting fresh.")
+    n_jobs = int(args.n_jobs)
+    if n_jobs < 1:
+        raise ValueError(f"--n-jobs must be >= 1; got {n_jobs}.")
 
     try:
         import dynesty
@@ -99,51 +191,91 @@ def main() -> None:
     bounds = prior_bounds(retrieval_config, names)
     logger.info("Sampling parameters: %s", names)
     logger.info("Fixed Kp=%.3f Vsys=%.3f unless sampled", fixed_kp, fixed_vsys)
+    logger.info("Dynesty execution mode: %s with n_jobs=%d", "serial" if n_jobs == 1 else "parallel", n_jobs)
 
-    n_calls = 0
+    sampler_state = {
+        "retrieval_config": retrieval_config,
+        # Only ghost_res is needed by the template builder.  Avoid putting the
+        # imported project config module itself into multiprocessing state.
+        "exopipe_config": SimpleNamespace(ghost_res=float(exopipe_config.ghost_res)),
+        "blocks": blocks,
+        "initial": initial,
+        "names": names,
+        "bounds": bounds,
+        "fixed_kp": float(fixed_kp),
+        "fixed_vsys": float(fixed_vsys),
+        "sample_kp_vsys": bool(args.sample_kp_vsys),
+        "objective": args.objective,
+    }
+    init_sampler_worker({**sampler_state, "logger": logger})
 
-    def prior_transform(unit_cube: Any) -> Any:
-        theta = np.empty(len(names), dtype=float)
-        for idx, (lo, hi) in enumerate(bounds):
-            theta[idx] = lo + (hi - lo) * unit_cube[idx]
-        return theta
+    serial_calls = 0
 
-    def log_likelihood(theta: Any) -> float:
-        nonlocal n_calls
-        n_calls += 1
-        updates = {name: float(value) for name, value in zip(names, theta)}
-        parameters = parameters_with_updates(initial, updates)
-        if not args.sample_kp_vsys:
-            parameters["Kp"] = float(fixed_kp)
-            parameters["Vsys"] = float(fixed_vsys)
+    def serial_log_likelihood(theta: Any) -> float:
+        nonlocal serial_calls
+        serial_calls += 1
         start = time.perf_counter()
-        try:
-            template = build_prt_xcorr_template(retrieval_config, exopipe_config, parameters, logger=None)
-            result = evaluate_objective(
-                blocks=blocks,
-                F_model=template["F_model"],
-                Kp=parameters["Kp"],
-                Vsys=parameters["Vsys"],
-                objective=args.objective,
-            )
-            value = float(result["objective_value"])
-        except Exception as exc:
-            logger.warning("Sampler model evaluation failed at call %d: %s", n_calls, exc)
-            value = -np.inf
-        if n_calls % 10 == 0:
-            logger.info("sampler call %d loglike=%.6e seconds=%.2f", n_calls, value, time.perf_counter() - start)
+        value = log_likelihood_from_state(theta)
+        if serial_calls % 10 == 0:
+            logger.info("sampler call %d loglike=%.6e seconds=%.2f", serial_calls, value, time.perf_counter() - start)
         return value
 
-    sampler = dynesty.NestedSampler(
-        log_likelihood,
-        prior_transform,
-        ndim=len(names),
-        nlive=int(args.nlive),
-        bound="multi",
-        sample="rwalk",
-    )
-    sampler.run_nested(maxcall=args.maxcall)
+    def run_sampler_with_callables(loglike: Any, prior: Any, pool: Any = None, queue_size: int | None = None) -> Any:
+        kwargs = {}
+        if pool is not None:
+            kwargs["pool"] = pool
+            kwargs["queue_size"] = int(queue_size or n_jobs)
+        sampler = dynesty.NestedSampler(
+            loglike,
+            prior,
+            ndim=len(names),
+            nlive=int(args.nlive),
+            bound="multi",
+            sample="rwalk",
+            **kwargs,
+        )
+        sampler.run_nested(maxcall=args.maxcall)
+        return sampler
+
+    sampler_start = time.perf_counter()
+    multiprocessing_start_method = "serial"
+    queue_size = 1
+    if n_jobs == 1:
+        sampler = run_sampler_with_callables(serial_log_likelihood, prior_transform_from_state)
+    else:
+        ctx = multiprocessing_context()
+        multiprocessing_start_method = ctx.get_start_method()
+        queue_size = n_jobs
+        logger.info(
+            "Starting dynesty multiprocessing pool with %d workers, start_method=%s, queue_size=%d",
+            n_jobs,
+            multiprocessing_start_method,
+            queue_size,
+        )
+        with ctx.Pool(
+            processes=n_jobs,
+            initializer=init_sampler_worker,
+            initargs=(sampler_state,),
+        ) as pool:
+            sampler = run_sampler_with_callables(
+                log_likelihood_from_state,
+                prior_transform_from_state,
+                pool=pool,
+                queue_size=queue_size,
+            )
+    walltime_seconds = float(time.perf_counter() - sampler_start)
     results = sampler.results
+
+    n_calls = dynesty_call_count(results, fallback=serial_calls)
+    calls_per_second = float(n_calls / walltime_seconds) if walltime_seconds > 0 else 0.0
+    average_seconds_per_call = float(walltime_seconds / n_calls) if n_calls > 0 else None
+
+    logger.info(
+        "Dynesty finished in %.2fs with n_calls=%d, calls_per_second=%.4f",
+        walltime_seconds,
+        n_calls,
+        calls_per_second,
+    )
 
     samples = np.asarray(results.samples)
     logl = np.asarray(results.logl)
@@ -180,7 +312,14 @@ def main() -> None:
         "log_evidence": evidence,
         "nlive": int(args.nlive),
         "maxcall": args.maxcall,
+        "n_jobs": int(n_jobs),
+        "parallel_mode": "serial" if n_jobs == 1 else "multiprocessing",
+        "multiprocessing_start_method": multiprocessing_start_method,
+        "queue_size": int(queue_size),
+        "walltime_seconds": walltime_seconds,
         "n_calls": int(n_calls),
+        "calls_per_second": calls_per_second,
+        "average_seconds_per_call": average_seconds_per_call,
         "data": block_summary(blocks),
     }
     with (output_dir / "fe_hrccs_dynesty_summary.json").open("w", encoding="utf-8") as handle:
