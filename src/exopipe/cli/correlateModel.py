@@ -25,8 +25,8 @@ def correlateModel(srf, wave, RV, Kp, reduce_res, orbital):
 
 def shift2BERV(sysr, wave, error, berv, vsys):
 
-	sysr_berv = np.zeros(np.shape(sysr))
-	sysr_berv_error = np.zeros(np.shape(error))
+	sysr_berv = np.full_like(sysr, np.nan)
+	sysr_berv_error = np.full_like(error, np.nan)
 	for odx, o in enumerate(sysr):
 		r, re = tools.shift2rest(o, wave[odx][0], -1. * berv * u.km / u.s + vsys, error[odx])
 		sysr_berv[odx] = r 
