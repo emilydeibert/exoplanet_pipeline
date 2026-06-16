@@ -380,6 +380,8 @@ def main():
 
     #RV = data["RV"] if "RV" in data.files else config.RV
     #Kp = data["Kp"] if "Kp" in data.files else config.Kp
+    RV = np.asarray(config.RV, dtype=float)
+    Kp = np.asarray(config.Kp, dtype=float)
 
     RV_MIN = config.RV_MIN if hasattr(config, "RV_MIN") else -75
     RV_MAX = config.RV_MAX if hasattr(config, "RV_MAX") else 75
