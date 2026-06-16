@@ -198,6 +198,9 @@ def load_and_combine_maps(
     combined_maps = []
     used_orders_by_block = {}
 
+    RV_ref = None
+    Kp_ref = None
+
     for camera in cameras:
 
         for night in nights:
@@ -232,8 +235,20 @@ def load_and_combine_maps(
                 filename,
                 orders=orders,
                 map_sign=map_sign,
-                )
-            
+            )
+
+            RV_file = np.asarray(RV_file, dtype=float)
+            Kp_file = np.asarray(Kp_file, dtype=float)
+
+            if RV_ref is None:
+                RV_ref = RV_file
+                Kp_ref = Kp_file
+            else:
+                if not np.allclose(RV_ref, RV_file):
+                    raise ValueError(f"RV grid mismatch for {filename}")
+                if not np.allclose(Kp_ref, Kp_file):
+                    raise ValueError(f"Kp grid mismatch for {filename}")
+
             combined_maps.append(order_sum)
 
             used_orders_by_block[f"{night}_{camera}_{kind}"] = [
@@ -242,7 +257,31 @@ def load_and_combine_maps(
 
     final_map = np.nansum(combined_maps, axis=0)
 
-    return final_map, used_orders_by_block
+    return final_map, used_orders_by_block, RV_ref, Kp_ref
+
+
+def crop_map_to_grid(
+    signal_map,
+    RV,
+    Kp,
+    rv_min,
+    rv_max,
+    kp_min=None,
+    kp_max=None,
+):
+    RV = np.asarray(RV, dtype=float)
+    Kp = np.asarray(Kp, dtype=float)
+
+    rv_mask = (RV >= rv_min) & (RV <= rv_max)
+
+    if kp_min is None:
+        kp_min = np.nanmin(Kp)
+    if kp_max is None:
+        kp_max = np.nanmax(Kp)
+
+    kp_mask = (Kp >= kp_min) & (Kp <= kp_max)
+
+    return signal_map[kp_mask][:, rv_mask], RV[rv_mask], Kp[kp_mask]
 
 
 def calculate_noise_from_observed(
@@ -405,7 +444,7 @@ def main():
 
     negative_expected_kp = args.negative_expected_kp
     if negative_expected_kp is None:
-        negative_expected_kp = expected_kp
+        negative_expected_kp = -1.0 * expected_kp
 
     negative_expected_rv = args.negative_expected_rv
     if negative_expected_rv is None:
@@ -433,7 +472,7 @@ def main():
         print(f"SYSREM k = {k}")
         print("=" * 40)
 
-        obs_map, obs_orders = load_and_combine_maps(
+        obs_map, obs_orders, RV_obs, Kp_obs = load_and_combine_maps(
             model=args.model,
             iters=k,
             nights=nights,
@@ -441,9 +480,9 @@ def main():
             kind="obs",
             orders=args.orders,
             map_sign=args.map_sign,
-        )
+            )
 
-        pos_map, pos_orders = load_and_combine_maps(
+        pos_map, pos_orders, RV_pos, Kp_pos = load_and_combine_maps(
             model=args.model,
             iters=k,
             nights=nights,
@@ -451,9 +490,9 @@ def main():
             kind="positive",
             orders=args.orders,
             map_sign=args.map_sign,
-        )
+            )
 
-        neg_map, neg_orders = load_and_combine_maps(
+        neg_map, neg_orders, RV_neg, Kp_neg = load_and_combine_maps(
             model=args.model,
             iters=k,
             nights=nights,
@@ -461,11 +500,56 @@ def main():
             kind="negative",
             orders=args.orders,
             map_sign=args.map_sign,
-        )
+            )
 
-        obs_crop = obs_map[kp_mask][:, rv_mask]
-        pos_crop = pos_map[kp_mask][:, rv_mask]
-        neg_crop = neg_map[kp_mask][:, rv_mask]
+        if not np.allclose(RV_obs, RV_pos):
+            raise ValueError("Observed and positive-injection RV grids do not match.")
+        if not np.allclose(Kp_obs, Kp_pos):
+            raise ValueError("Observed and positive-injection Kp grids do not match.")
+
+        RV_MIN = config.RV_MIN if hasattr(config, "RV_MIN") else -75
+        RV_MAX = config.RV_MAX if hasattr(config, "RV_MAX") else 75
+
+        KP_MIN = config.KP_MIN if hasattr(config, "KP_MIN") else None
+        KP_MAX = config.KP_MAX if hasattr(config, "KP_MAX") else None
+
+        obs_crop, RV_obs_crop, Kp_obs_crop = crop_map_to_grid(
+            obs_map,
+            RV_obs,
+            Kp_obs,
+            rv_min=RV_MIN,
+            rv_max=RV_MAX,
+            kp_min=KP_MIN,
+            kp_max=KP_MAX,
+            )
+
+        pos_crop, RV_pos_crop, Kp_pos_crop = crop_map_to_grid(
+            pos_map,
+            RV_pos,
+            Kp_pos,
+            rv_min=RV_MIN,
+            rv_max=RV_MAX,
+            kp_min=KP_MIN,
+            kp_max=KP_MAX,
+            )
+
+        # For the negative injection, use the negative file's own Kp grid.
+        # If the grid is negative, mirror the positive Kp crop limits.
+        if np.nanmax(Kp_neg) < 0 and KP_MIN is not None and KP_MAX is not None:
+            NEG_KP_MIN = -1.0 * KP_MAX
+            NEG_KP_MAX = -1.0 * KP_MIN
+        else:
+            NEG_KP_MIN = KP_MIN
+            NEG_KP_MAX = KP_MAX
+
+        neg_crop, RV_neg_crop, Kp_neg_crop = crop_map_to_grid(neg_map,
+            RV_neg,
+            Kp_neg,
+            rv_min=RV_MIN,
+            rv_max=RV_MAX,
+            kp_min=NEG_KP_MIN,
+            kp_max=NEG_KP_MAX,
+            )
 
         # This is the Cheverall-style / paper-style delta CCF definition:
         #   Delta CCF = CCF_injected - CCF_observed
@@ -496,14 +580,14 @@ def main():
 
         obs_global = find_peak(
             obs_snr_map,
-            RV_crop,
-            Kp_crop,
+            RV_obs_crop,
+            Kp_obs_crop,
         )
 
         obs_expected = find_peak_near_expected(
             obs_snr_map,
-            RV_crop,
-            Kp_crop,
+            RV_obs_crop,
+            Kp_obs_crop,
             expected_kp=expected_kp,
             expected_rv=expected_rv,
             kp_window=args.kp_window,
@@ -512,14 +596,14 @@ def main():
 
         neg_global = find_peak(
             neg_snr_map,
-            RV_crop,
-            Kp_crop,
+            RV_neg_crop,
+            Kp_neg_crop,
         )
 
         neg_expected = find_peak_near_expected(
             neg_snr_map,
-            RV_crop,
-            Kp_crop,
+            RV_neg_crop,
+            Kp_neg_crop,
             expected_kp=negative_expected_kp,
             expected_rv=negative_expected_rv,
             kp_window=args.kp_window,
@@ -528,14 +612,14 @@ def main():
 
         delta_global = find_peak(
             delta_recovery_snr_map,
-            RV_crop,
-            Kp_crop,
+            RV_obs_crop,
+            Kp_obs_crop,
         )
 
         delta_expected = find_peak_near_expected(
             delta_recovery_snr_map,
-            RV_crop,
-            Kp_crop,
+            RV_obs_crop,
+            Kp_obs_crop,
             expected_kp=expected_kp,
             expected_rv=expected_rv,
             kp_window=args.kp_window,
