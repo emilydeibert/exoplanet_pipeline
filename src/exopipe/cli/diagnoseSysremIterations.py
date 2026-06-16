@@ -510,8 +510,13 @@ def main():
         RV_MIN = config.RV_MIN if hasattr(config, "RV_MIN") else -75
         RV_MAX = config.RV_MAX if hasattr(config, "RV_MAX") else 75
 
-        KP_MIN = config.KP_MIN if hasattr(config, "KP_MIN") else None
-        KP_MAX = config.KP_MAX if hasattr(config, "KP_MAX") else None
+        KP_MIN = getattr(config, "KP_MIN", 1)
+        KP_MAX = getattr(config, "KP_MAX", 300)
+
+        if KP_MIN is None:
+            KP_MIN = 1
+        if KP_MAX is None:
+            KP_MAX = 300
 
         obs_crop, RV_obs_crop, Kp_obs_crop = crop_map_to_grid(
             obs_map,
@@ -535,7 +540,7 @@ def main():
 
         # For the negative injection, use the negative file's own Kp grid.
         # If the grid is negative, mirror the positive Kp crop limits.
-        if np.nanmax(Kp_neg) < 0 and KP_MIN is not None and KP_MAX is not None:
+        if np.nanmax(Kp_neg) <= 0 and np.nanmin(Kp_neg) < 0:
             NEG_KP_MIN = -1.0 * KP_MAX
             NEG_KP_MAX = -1.0 * KP_MIN
         else:
