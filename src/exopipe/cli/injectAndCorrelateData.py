@@ -171,6 +171,27 @@ if __name__ == '__main__':
 		default="positive"
 	)
 
+	parser.add_argument(
+		"--nights",
+		nargs="+",
+		default=None,
+		help="Night(s) to process. Default: config.nights"
+	)
+
+	parser.add_argument(
+		"--cameras",
+		nargs="+",
+		default=None,
+		help="Camera(s) to process. Default: config.camera"
+	)
+
+	parser.add_argument(
+		"--models",
+		nargs="+",
+		default=None,
+		help="Model(s) to process. Default: config.models"
+	)
+
 	args = parser.parse_args()
 
 	project_path = Path(args.project_path)
@@ -188,6 +209,14 @@ if __name__ == '__main__':
 	RV = config.RV
 	Kp_base = np.asarray(config.Kp, dtype=float)
 
+	models_to_run = args.models if args.models is not None else config.models
+	nights_to_run = args.nights if args.nights is not None else config.nights
+	cameras_to_run = args.cameras if args.cameras is not None else config.camera
+
+	print(f"Models to run: {models_to_run}")
+	print(f"Nights to run: {nights_to_run}")
+	print(f"Cameras to run: {cameras_to_run}")
+
 	if args.inject_sign == "negative":
 		Kp = np.sort(-1.0 * Kp_base)
 	else:
@@ -196,7 +225,7 @@ if __name__ == '__main__':
 	print(f"Injection sign: {args.inject_sign}")
 	print(f"Stacking Kp grid from {np.nanmin(Kp):.1f} to {np.nanmax(Kp):.1f}")
 
-	for model in config.models:
+	for model in models_to_run:
 
 		print(model)
 
@@ -219,9 +248,9 @@ if __name__ == '__main__':
 		
 		F_model= interpolate.interp1d(model_wvl, model_conv, kind='linear', bounds_error=False, fill_value=np.nan)		
 
-		for night in config.nights:
+		for night in nights_to_run:
 
-			for camera in config.camera:
+			for camera in cameras_to_run:
 
 				with np.load(config.path2reduced+night+'_'+camera+'.npz') as data_array:
 					flux = data_array['flux']
