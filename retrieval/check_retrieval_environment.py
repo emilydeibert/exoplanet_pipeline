@@ -24,6 +24,7 @@ PACKAGE_CHECKS = [
     ("h5py", "h5py", True),
     ("petitRADTRANS", "petitRADTRANS", True),
     ("dynesty", "dynesty", True),
+    ("emcee", "emcee", True),
     ("corner", "corner", True),
     ("ultranest", "ultranest", False),
 ]

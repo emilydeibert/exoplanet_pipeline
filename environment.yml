@@ -16,6 +16,7 @@ dependencies:
   - pyyaml
   - h5py
   - dynesty
+  - emcee
   - corner
   - pip:
       - petitRADTRANS[retrieval]

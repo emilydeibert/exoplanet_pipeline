@@ -4,172 +4,26 @@ from __future__ import annotations
 
 import argparse
 import json
-import multiprocessing as mp
-import os
 import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from retrieval.prt_emission_model import initialize_prt_atmosphere, setup_logging
+from retrieval.prt_emission_model import setup_logging
 
-from .ccf_likelihood import evaluate_objective
 from .data_loading import block_summary, load_hrccs_data, load_project_modules, parse_int_list, split_cli_list
-from .model_builder import build_prt_xcorr_template, load_retrieval_config_and_parameters, parameters_with_updates
-
-
-_SAMPLER_STATE: dict[str, Any] = {}
-
-
-def init_sampler_worker(state: dict[str, Any]) -> None:
-    """Initialize read-only sampler state in the main process or pool workers."""
-
-    global _SAMPLER_STATE
-    _SAMPLER_STATE = dict(state)
-    _SAMPLER_STATE["atmosphere"] = None
-
-    start = time.perf_counter()
-    pid = os.getpid()
-    identity = mp.current_process()._identity
-    worker_index = int(identity[0]) if identity else 0
-    cache_prt = bool(_SAMPLER_STATE.get("cache_prt_atmosphere", False))
-
-    if cache_prt:
-        _SAMPLER_STATE["atmosphere"] = initialize_prt_atmosphere(
-            _SAMPLER_STATE["retrieval_config"],
-            logger=None,
-        )
-
-    elapsed = float(time.perf_counter() - start)
-    record = {
-        "pid": int(pid),
-        "worker_index": worker_index,
-        "process_name": mp.current_process().name,
-        "cache_prt_atmosphere": cache_prt,
-        "atmosphere_initialized": _SAMPLER_STATE["atmosphere"] is not None,
-        "seconds": elapsed,
-    }
-    _SAMPLER_STATE["worker_init_record"] = record
-
-    log_path = _SAMPLER_STATE.get("worker_init_log_path")
-    if log_path is not None:
-        with Path(log_path).open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(record, sort_keys=True) + "\n")
-
-    if cache_prt:
-        print(
-            "HRCCS sampler worker initialized "
-            f"pid={pid} index={worker_index} atmosphere_cached=True seconds={elapsed:.2f}",
-            flush=True,
-        )
-
-
-def prior_transform_from_state(unit_cube: Any) -> Any:
-    """Dynesty prior transform using module-level state for multiprocessing."""
-
-    import numpy as np
-
-    bounds = _SAMPLER_STATE["bounds"]
-    theta = np.empty(len(bounds), dtype=float)
-    for idx, (lo, hi) in enumerate(bounds):
-        theta[idx] = lo + (hi - lo) * unit_cube[idx]
-    return theta
-
-
-def log_likelihood_from_state(theta: Any) -> float:
-    """Evaluate one HRCCS likelihood using module-level state.
-
-    This function is intentionally top-level so Python multiprocessing can
-    pickle it for dynesty's pool workers.
-    """
-
-    import numpy as np
-
-    state = _SAMPLER_STATE
-    updates = {name: float(value) for name, value in zip(state["names"], theta)}
-    parameters = parameters_with_updates(state["initial"], updates)
-    if not state["sample_kp_vsys"]:
-        parameters["Kp"] = float(state["fixed_kp"])
-        parameters["Vsys"] = float(state["fixed_vsys"])
-
-    try:
-        template = build_prt_xcorr_template(
-            state["retrieval_config"],
-            state["exopipe_config"],
-            parameters,
-            atmosphere=state.get("atmosphere"),
-            logger=None,
-        )
-        result = evaluate_objective(
-            blocks=state["blocks"],
-            F_model=template["F_model"],
-            Kp=parameters["Kp"],
-            Vsys=parameters["Vsys"],
-            objective=state["objective"],
-        )
-        return float(result["objective_value"])
-    except Exception as exc:
-        logger = state.get("logger")
-        if logger is not None:
-            logger.warning("Sampler model evaluation failed: %s", exc)
-        return -np.inf
-
-
-def multiprocessing_context() -> Any:
-    """Return the multiprocessing context used for parallel dynesty calls.
-
-    On Linux/HPC nodes, ``fork`` is the most practical default here because the
-    large shifted data arrays can be inherited copy-on-write by worker
-    processes.  If ``fork`` is unavailable, fall back to Python's platform
-    default context.
-    """
-
-    try:
-        return mp.get_context("fork")
-    except ValueError:  # pragma: no cover - platform dependent
-        return mp.get_context()
-
-
-def dynesty_call_count(results: Any, fallback: int) -> int:
-    """Extract the number of likelihood calls from dynesty results."""
-
-    try:
-        import numpy as np
-
-        return int(np.sum(np.asarray(results.ncall)))
-    except Exception:
-        return int(fallback)
-
-
-def read_worker_init_records(path: Path) -> list[dict[str, Any]]:
-    """Read worker initialization JSONL records if present."""
-
-    if not path.exists():
-        return []
-    records = []
-    with path.open("r", encoding="utf-8") as handle:
-        for line in handle:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                records.append(json.loads(line))
-            except json.JSONDecodeError:
-                pass
-    return records
-
-
-def draw_benchmark_thetas(n_calls: int, bounds: list[tuple[float, float]], seed: int = 12345) -> Any:
-    """Draw deterministic representative theta points from the priors."""
-
-    import numpy as np
-
-    rng = np.random.default_rng(seed)
-    unit = rng.uniform(size=(int(n_calls), len(bounds)))
-    theta = np.empty_like(unit, dtype=float)
-    for idx, (lo, hi) in enumerate(bounds):
-        theta[:, idx] = lo + (hi - lo) * unit[:, idx]
-    return theta
+from .model_builder import build_prt_xcorr_template, load_retrieval_config_and_parameters
+from .sampler_common import (
+    draw_benchmark_thetas,
+    dynesty_call_count,
+    init_sampler_worker,
+    log_likelihood_from_state,
+    multiprocessing_context,
+    parameter_names,
+    prior_bounds,
+    prior_transform_from_state,
+    read_worker_init_records,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -201,24 +55,6 @@ def parse_args() -> argparse.Namespace:
         default="matched_filter_loglike",
     )
     return parser.parse_args()
-
-
-def parameter_names(args: argparse.Namespace) -> list[str]:
-    names = ["T_deep", "delta_T_inv", "log10_Fe"]
-    if args.sample_kp_vsys:
-        names = ["Kp", "Vsys"] + names
-    return names
-
-
-def prior_bounds(retrieval_config: dict[str, Any], names: list[str]) -> list[tuple[float, float]]:
-    priors = retrieval_config.get("priors", {})
-    bounds = []
-    for name in names:
-        if name not in priors:
-            raise ValueError(f"Missing prior bounds for sampled parameter {name!r}.")
-        lo, hi = priors[name]
-        bounds.append((float(lo), float(hi)))
-    return bounds
 
 
 def main() -> None:
@@ -262,7 +98,7 @@ def main() -> None:
         logger=logger,
     )
 
-    names = parameter_names(args)
+    names = parameter_names(args.sample_kp_vsys)
     bounds = prior_bounds(retrieval_config, names)
     logger.info("Sampling parameters: %s", names)
     logger.info("Fixed Kp=%.3f Vsys=%.3f unless sampled", fixed_kp, fixed_vsys)

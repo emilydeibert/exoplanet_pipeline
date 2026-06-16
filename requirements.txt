@@ -10,5 +10,6 @@ astropy
 PyYAML
 h5py
 dynesty
+emcee
 corner
 petitRADTRANS[retrieval]
