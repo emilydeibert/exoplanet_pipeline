@@ -163,7 +163,12 @@ def load_one_map(
 
     fmap = data["fmap"]
 
-    if "orders" in data:
+    # Use the Kp/RV grid saved in the file if available.
+    # Fall back to config for older products.
+    RV_file = data["RV"] if "RV" in data.files else config.RV
+    Kp_file = data["Kp"] if "Kp" in data.files else config.Kp
+
+    if "orders" in data.files:
         saved_orders = data["orders"]
     else:
         saved_orders = np.arange(fmap.shape[0])
@@ -178,7 +183,7 @@ def load_one_map(
 
     order_sum *= map_sign
 
-    return order_sum, saved_orders[order_positions]
+    return order_sum, saved_orders[order_positions], RV_file, Kp_file
 
 
 def load_and_combine_maps(
@@ -223,12 +228,12 @@ def load_and_combine_maps(
             if not filename.exists():
                 raise FileNotFoundError(filename)
 
-            order_sum, used_orders = load_one_map(
+            order_sum, used_orders, RV_file, Kp_file = load_one_map(
                 filename,
                 orders=orders,
                 map_sign=map_sign,
-            )
-
+                )
+            
             combined_maps.append(order_sum)
 
             used_orders_by_block[f"{night}_{camera}_{kind}"] = [
@@ -373,8 +378,8 @@ def main():
     nights = args.nights if args.nights is not None else config.nights
     cameras = args.cameras if args.cameras is not None else config.camera
 
-    RV = data["RV"] if "RV" in data.files else config.RV
-    Kp = data["Kp"] if "Kp" in data.files else config.Kp
+    #RV = data["RV"] if "RV" in data.files else config.RV
+    #Kp = data["Kp"] if "Kp" in data.files else config.Kp
 
     RV_MIN = config.RV_MIN if hasattr(config, "RV_MIN") else -75
     RV_MAX = config.RV_MAX if hasattr(config, "RV_MAX") else 75
