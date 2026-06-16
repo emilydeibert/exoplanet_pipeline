@@ -185,8 +185,16 @@ if __name__ == '__main__':
 	params = importlib.util.module_from_spec(params_spec)
 	params_spec.loader.exec_module(params)
 
-	RV = config.RV 
-	Kp = config.Kp
+	RV = config.RV
+	Kp_base = np.asarray(config.Kp, dtype=float)
+
+	if args.inject_sign == "negative":
+    	Kp = np.sort(-1.0 * Kp_base)
+	else:
+    	Kp = Kp_base
+
+	print(f"Injection sign: {args.inject_sign}")
+	print(f"Stacking Kp grid from {np.nanmin(Kp):.1f} to {np.nanmax(Kp):.1f}")
 
 	for model in config.models:
 

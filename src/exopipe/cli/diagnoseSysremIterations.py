@@ -485,6 +485,8 @@ def main():
             noise_obs,
         )
 
+        delta_recovery_snr_map = -1.0 * delta_snr_map
+
         obs_global = find_peak(
             obs_snr_map,
             RV_crop,
@@ -518,13 +520,13 @@ def main():
         )
 
         delta_global = find_peak(
-            delta_snr_map,
+            delta_recovery_snr_map,
             RV_crop,
             Kp_crop,
         )
 
         delta_expected = find_peak_near_expected(
-            delta_snr_map,
+            delta_recovery_snr_map,
             RV_crop,
             Kp_crop,
             expected_kp=expected_kp,

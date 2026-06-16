@@ -154,7 +154,9 @@ if __name__ == '__main__':
 						fmap = fmap_results,
 						orders = orders_to_correlate,
 						k = k,
-						model = model
+						model = model,
+						RV = RV,
+						Kp = Kp
 						)
 
 	main()
