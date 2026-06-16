@@ -425,8 +425,8 @@ def main():
     RV_MIN = config.RV_MIN if hasattr(config, "RV_MIN") else -75
     RV_MAX = config.RV_MAX if hasattr(config, "RV_MAX") else 75
 
-    KP_MIN = config.KP_MIN if hasattr(config, "KP_MIN") else np.nanmin(Kp)
-    KP_MAX = config.KP_MAX if hasattr(config, "KP_MAX") else np.nanmax(Kp)
+    KP_MIN = config.KP_MIN if hasattr(config, "KP_MIN") else 1
+    KP_MAX = config.KP_MAX if hasattr(config, "KP_MAX") else 300
 
     rv_mask = (RV >= RV_MIN) & (RV <= RV_MAX)
     kp_mask = (Kp >= KP_MIN) & (Kp <= KP_MAX)
