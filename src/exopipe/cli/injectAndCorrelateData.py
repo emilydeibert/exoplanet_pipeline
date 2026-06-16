@@ -303,7 +303,10 @@ if __name__ == '__main__':
 						orders = orders_to_correlate,
 						k = k,
 						model = model,
-						inject_kp = inject_kp
+						inject_kp = inject_kp,
+						RV = RV,
+						Kp = Kp,
+						inject_sign = args.inject_sign
 					)
 
 	main()
