@@ -51,81 +51,81 @@ def mask_badpix(data, variance, badPix):
 	return corrected, corrected_var
 
 def mad_clip_mask_timeaxis(x, nsig=5.0):
-    """
-    Returns mask True where values are outliers along time axis
-    for each wavelength pixel independently.
+	"""
+	Returns mask True where values are outliers along time axis
+	for each wavelength pixel independently.
 
-    x: (n_exp, n_pix)
-    """
-    med = np.nanmedian(x, axis=0)                      # (n_pix,)
-    resid = x - med[None, :]
-    mad = np.nanmedian(np.abs(resid), axis=0)          # (n_pix,)
+	x: (n_exp, n_pix)
+	"""
+	med = np.nanmedian(x, axis=0)                      # (n_pix,)
+	resid = x - med[None, :]
+	mad = np.nanmedian(np.abs(resid), axis=0)          # (n_pix,)
 
-    # Avoid divide-by-zero: if mad==0, never flag based on it
-    thresh = nsig * 1.4826 * mad                       # robust sigma estimate
-    mask = resid > thresh[None, :]
+	# Avoid divide-by-zero: if mad==0, never flag based on it
+	thresh = nsig * 1.4826 * mad                       # robust sigma estimate
+	mask = resid > thresh[None, :]
 
-    mask[:, mad == 0] = False
-    return mask
+	mask[:, mad == 0] = False
+	return mask
 
 def normalize_order_lightcurve(flux, variance=None, q=75):
-    """
-    Normalize each (order, exposure) by a robust scalar (percentile across pixels).
+	"""
+	Normalize each (order, exposure) by a robust scalar (percentile across pixels).
 
-    flux: (n_ord, n_exp, n_pix)
-    variance: same shape or None
-    q: percentile used as scale (75 is a nice default)
-    Returns:
-      flux_n, var_n, scale  (scale has shape (n_ord, n_exp, 1))
-    """
-    flux = flux.astype(np.float64, copy=False)
+	flux: (n_ord, n_exp, n_pix)
+	variance: same shape or None
+	q: percentile used as scale (75 is a nice default)
+	Returns:
+	  flux_n, var_n, scale  (scale has shape (n_ord, n_exp, 1))
+	"""
+	flux = flux.astype(np.float64, copy=False)
 
-    scale = np.nanpercentile(flux, q, axis=2, keepdims=True)  # (n_ord, n_exp, 1)
-    # protect against zeros/infs
-    bad = ~np.isfinite(scale) | (scale <= 0)
-    scale[bad] = np.nan
+	scale = np.nanpercentile(flux, q, axis=2, keepdims=True)  # (n_ord, n_exp, 1)
+	# protect against zeros/infs
+	bad = ~np.isfinite(scale) | (scale <= 0)
+	scale[bad] = np.nan
 
-    flux_n = flux / scale
+	flux_n = flux / scale
 
-    if variance is None:
-        return flux_n, None, scale
+	if variance is None:
+		return flux_n, None, scale
 
-    variance = variance.astype(np.float64, copy=False)
-    var_n = variance / (scale ** 2)
+	variance = variance.astype(np.float64, copy=False)
+	var_n = variance / (scale ** 2)
 
-    return flux_n, var_n, scale
+	return flux_n, var_n, scale
 
 def flatten_orders(flux_norm, width=301):
-    """
-    Remove low-frequency continuum per (exposure, order).
-    flux_norm: (n_exp, n_ord, n_pix)
-    Returns: flattened_flux, continuum
-    """
-    x = flux_norm.copy()
+	"""
+	Remove low-frequency continuum per (exposure, order).
+	flux_norm: (n_exp, n_ord, n_pix)
+	Returns: flattened_flux, continuum
+	"""
+	x = flux_norm.copy()
 
-    # Fill NaNs with per-(exp,order) median across pixels
-    fill = np.nanmedian(x, axis=2, keepdims=True)  # (n_exp, n_ord, 1)
-    x = np.where(np.isfinite(x), x, fill)
+	# Fill NaNs with per-(exp,order) median across pixels
+	fill = np.nanmedian(x, axis=2, keepdims=True)  # (n_exp, n_ord, 1)
+	x = np.where(np.isfinite(x), x, fill)
 
-    # Median filter only along pixel axis
-    cont = median_filter(x, size=(1, 1, width), mode="nearest")
-    cont = np.where((np.isfinite(cont) & (cont != 0)), cont, np.nan)
+	# Median filter only along pixel axis
+	cont = median_filter(x, size=(1, 1, width), mode="nearest")
+	cont = np.where((np.isfinite(cont) & (cont != 0)), cont, np.nan)
 
-    flat = flux_norm / cont
-    return flat, cont
+	flat = flux_norm / cont
+	return flat, cont
 
 def mask_order_edges(arr, n_edge=100, value=np.nan):
-    """
-    Mask n_edge pixels on both ends of the pixel axis.
-    arr: (n_exp, n_ord, n_pix)
-    """
-    out = arr.copy()
-    if n_edge <= 0:
-        return out
+	"""
+	Mask n_edge pixels on both ends of the pixel axis.
+	arr: (n_exp, n_ord, n_pix)
+	"""
+	out = arr.copy()
+	if n_edge <= 0:
+		return out
 
-    out[..., :n_edge] = value
-    out[..., -n_edge:] = value
-    return out
+	out[..., :n_edge] = value
+	out[..., -n_edge:] = value
+	return out
 
 
 def correlateModel(srf, wave, RV, Kp, reduce_res, orbital):
@@ -166,9 +166,9 @@ if __name__ == '__main__':
 		)
 
 	parser.add_argument(
-	    "--inject-sign",
-	    choices=["positive", "negative"],
-	    default="positive"
+		"--inject-sign",
+		choices=["positive", "negative"],
+		default="positive"
 	)
 
 	args = parser.parse_args()
@@ -189,9 +189,9 @@ if __name__ == '__main__':
 	Kp_base = np.asarray(config.Kp, dtype=float)
 
 	if args.inject_sign == "negative":
-    	Kp = np.sort(-1.0 * Kp_base)
+		Kp = np.sort(-1.0 * Kp_base)
 	else:
-    	Kp = Kp_base
+		Kp = Kp_base
 
 	print(f"Injection sign: {args.inject_sign}")
 	print(f"Stacking Kp grid from {np.nanmin(Kp):.1f} to {np.nanmax(Kp):.1f}")
