@@ -5,12 +5,13 @@ from __future__ import annotations
 import argparse
 import json
 import multiprocessing as mp
+import os
 import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from retrieval.prt_emission_model import setup_logging
+from retrieval.prt_emission_model import initialize_prt_atmosphere, setup_logging
 
 from .ccf_likelihood import evaluate_objective
 from .data_loading import block_summary, load_hrccs_data, load_project_modules, parse_int_list, split_cli_list
@@ -24,7 +25,43 @@ def init_sampler_worker(state: dict[str, Any]) -> None:
     """Initialize read-only sampler state in the main process or pool workers."""
 
     global _SAMPLER_STATE
-    _SAMPLER_STATE = state
+    _SAMPLER_STATE = dict(state)
+    _SAMPLER_STATE["atmosphere"] = None
+
+    start = time.perf_counter()
+    pid = os.getpid()
+    identity = mp.current_process()._identity
+    worker_index = int(identity[0]) if identity else 0
+    cache_prt = bool(_SAMPLER_STATE.get("cache_prt_atmosphere", False))
+
+    if cache_prt:
+        _SAMPLER_STATE["atmosphere"] = initialize_prt_atmosphere(
+            _SAMPLER_STATE["retrieval_config"],
+            logger=None,
+        )
+
+    elapsed = float(time.perf_counter() - start)
+    record = {
+        "pid": int(pid),
+        "worker_index": worker_index,
+        "process_name": mp.current_process().name,
+        "cache_prt_atmosphere": cache_prt,
+        "atmosphere_initialized": _SAMPLER_STATE["atmosphere"] is not None,
+        "seconds": elapsed,
+    }
+    _SAMPLER_STATE["worker_init_record"] = record
+
+    log_path = _SAMPLER_STATE.get("worker_init_log_path")
+    if log_path is not None:
+        with Path(log_path).open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, sort_keys=True) + "\n")
+
+    if cache_prt:
+        print(
+            "HRCCS sampler worker initialized "
+            f"pid={pid} index={worker_index} atmosphere_cached=True seconds={elapsed:.2f}",
+            flush=True,
+        )
 
 
 def prior_transform_from_state(unit_cube: Any) -> Any:
@@ -60,6 +97,7 @@ def log_likelihood_from_state(theta: Any) -> float:
             state["retrieval_config"],
             state["exopipe_config"],
             parameters,
+            atmosphere=state.get("atmosphere"),
             logger=None,
         )
         result = evaluate_objective(
@@ -103,6 +141,37 @@ def dynesty_call_count(results: Any, fallback: int) -> int:
         return int(fallback)
 
 
+def read_worker_init_records(path: Path) -> list[dict[str, Any]]:
+    """Read worker initialization JSONL records if present."""
+
+    if not path.exists():
+        return []
+    records = []
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                records.append(json.loads(line))
+            except json.JSONDecodeError:
+                pass
+    return records
+
+
+def draw_benchmark_thetas(n_calls: int, bounds: list[tuple[float, float]], seed: int = 12345) -> Any:
+    """Draw deterministic representative theta points from the priors."""
+
+    import numpy as np
+
+    rng = np.random.default_rng(seed)
+    unit = rng.uniform(size=(int(n_calls), len(bounds)))
+    theta = np.empty_like(unit, dtype=float)
+    for idx, (lo, hi) in enumerate(bounds):
+        theta[:, idx] = lo + (hi - lo) * unit[:, idx]
+    return theta
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("project_path")
@@ -120,6 +189,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sample-kp-vsys", action="store_true", help="Also sample Kp and Vsys. Default keeps them fixed.")
     parser.add_argument("--resume", action="store_true", help="Placeholder flag; current implementation starts a fresh dynesty run.")
     parser.add_argument("--test", action="store_true", help="Use a small nlive/maxcall for a fast plumbing test.")
+    parser.add_argument(
+        "--benchmark-likelihood-calls",
+        type=int,
+        default=None,
+        help="Evaluate N representative likelihood calls with the same pool/cache setup, then exit before dynesty.",
+    )
     parser.add_argument(
         "--objective",
         choices=["matched_filter_loglike", "ccf_peak_value"],
@@ -193,6 +268,8 @@ def main() -> None:
     logger.info("Fixed Kp=%.3f Vsys=%.3f unless sampled", fixed_kp, fixed_vsys)
     logger.info("Dynesty execution mode: %s with n_jobs=%d", "serial" if n_jobs == 1 else "parallel", n_jobs)
 
+    worker_init_log_path = output_dir / "fe_hrccs_worker_initialization.jsonl"
+    worker_init_log_path.write_text("", encoding="utf-8")
     sampler_state = {
         "retrieval_config": retrieval_config,
         # Only ghost_res is needed by the template builder.  Avoid putting the
@@ -206,8 +283,10 @@ def main() -> None:
         "fixed_vsys": float(fixed_vsys),
         "sample_kp_vsys": bool(args.sample_kp_vsys),
         "objective": args.objective,
+        "cache_prt_atmosphere": n_jobs > 1,
+        "worker_init_log_path": str(worker_init_log_path),
     }
-    init_sampler_worker({**sampler_state, "logger": logger})
+    init_sampler_worker({**sampler_state, "logger": logger, "cache_prt_atmosphere": False})
 
     serial_calls = 0
 
@@ -225,6 +304,12 @@ def main() -> None:
         if pool is not None:
             kwargs["pool"] = pool
             kwargs["queue_size"] = int(queue_size or n_jobs)
+            kwargs["use_pool"] = {
+                "loglikelihood": True,
+                "prior_transform": False,
+                "propose_point": False,
+                "update_bound": False,
+            }
         sampler = dynesty.NestedSampler(
             loglike,
             prior,
@@ -236,6 +321,85 @@ def main() -> None:
         )
         sampler.run_nested(maxcall=args.maxcall)
         return sampler
+
+    use_pool_settings = None
+    if n_jobs > 1:
+        use_pool_settings = {
+            "loglikelihood": True,
+            "prior_transform": False,
+            "propose_point": False,
+            "update_bound": False,
+        }
+
+    if args.benchmark_likelihood_calls is not None:
+        benchmark_calls = int(args.benchmark_likelihood_calls)
+        if benchmark_calls < 1:
+            raise ValueError("--benchmark-likelihood-calls must be >= 1 when supplied.")
+
+        theta_points = draw_benchmark_thetas(benchmark_calls, bounds)
+        benchmark_start = time.perf_counter()
+        if n_jobs == 1:
+            values = [serial_log_likelihood(theta) for theta in theta_points]
+            multiprocessing_start_method = "serial"
+            queue_size = 1
+        else:
+            ctx = multiprocessing_context()
+            multiprocessing_start_method = ctx.get_start_method()
+            queue_size = n_jobs
+            logger.info(
+                "Starting likelihood benchmark pool with %d workers, start_method=%s",
+                n_jobs,
+                multiprocessing_start_method,
+            )
+            with ctx.Pool(
+                processes=n_jobs,
+                initializer=init_sampler_worker,
+                initargs=(sampler_state,),
+            ) as pool:
+                values = pool.map(log_likelihood_from_state, list(theta_points), chunksize=1)
+
+        walltime_seconds = float(time.perf_counter() - benchmark_start)
+        n_calls = int(len(values))
+        calls_per_second = float(n_calls / walltime_seconds) if walltime_seconds > 0 else 0.0
+        average_seconds_per_call = float(walltime_seconds / n_calls) if n_calls > 0 else None
+
+        np.savez_compressed(
+            output_dir / "fe_hrccs_likelihood_benchmark.npz",
+            theta=theta_points,
+            log_likelihood=np.asarray(values, dtype=float),
+            parameter_names=np.asarray(names, dtype="U64"),
+        )
+        summary = {
+            "project_path": str(args.project_path),
+            "retrieval_config": str(args.retrieval_config),
+            "sysrem_iteration": int(args.k),
+            "objective": args.objective,
+            "parameter_names": names,
+            "benchmark_likelihood_calls": benchmark_calls,
+            "n_jobs": int(n_jobs),
+            "parallel_mode": "serial" if n_jobs == 1 else "multiprocessing",
+            "multiprocessing_start_method": multiprocessing_start_method,
+            "queue_size": int(queue_size),
+            "use_pool": use_pool_settings,
+            "prt_atmosphere_cached_per_worker": bool(n_jobs > 1),
+            "worker_initialization_log": str(worker_init_log_path),
+            "worker_initialization": read_worker_init_records(worker_init_log_path),
+            "walltime_seconds": walltime_seconds,
+            "n_calls": n_calls,
+            "calls_per_second": calls_per_second,
+            "average_seconds_per_call": average_seconds_per_call,
+            "data": block_summary(blocks),
+        }
+        with (output_dir / "fe_hrccs_likelihood_benchmark_summary.json").open("w", encoding="utf-8") as handle:
+            json.dump(summary, handle, indent=2, sort_keys=True)
+        logger.info(
+            "Likelihood benchmark finished in %.2fs with n_calls=%d, calls_per_second=%.4f",
+            walltime_seconds,
+            n_calls,
+            calls_per_second,
+        )
+        logger.info("Saved likelihood benchmark outputs to %s", output_dir)
+        return
 
     sampler_start = time.perf_counter()
     multiprocessing_start_method = "serial"
@@ -316,6 +480,10 @@ def main() -> None:
         "parallel_mode": "serial" if n_jobs == 1 else "multiprocessing",
         "multiprocessing_start_method": multiprocessing_start_method,
         "queue_size": int(queue_size),
+        "use_pool": use_pool_settings,
+        "prt_atmosphere_cached_per_worker": bool(n_jobs > 1),
+        "worker_initialization_log": str(worker_init_log_path),
+        "worker_initialization": read_worker_init_records(worker_init_log_path),
         "walltime_seconds": walltime_seconds,
         "n_calls": int(n_calls),
         "calls_per_second": calls_per_second,

@@ -147,5 +147,29 @@ On SLURM, request the same CPU count:
 ```bash
 #SBATCH --cpus-per-task=4
 
+export OMP_NUM_THREADS=1
+export MKL_NUM_THREADS=1
+export OPENBLAS_NUM_THREADS=1
+
 python -m retrieval.hrccs_retrieval.run_fe_sampler ... --n-jobs 4
+```
+
+The thread environment variables keep each process from spawning its own BLAS
+or OpenMP thread team.  This matters when `--n-jobs` is greater than 1.
+
+For timing the likelihood machinery without running dynesty, use:
+
+```bash
+python -m retrieval.hrccs_retrieval.run_fe_sampler \
+  /path/to/project \
+  --retrieval-config retrieval/configs/mascara1b_fe_smoketest.yaml \
+  --k 4 \
+  --nights 20240528 \
+  --cameras red \
+  --orders 1,2,3 \
+  --fix-kp 198 \
+  --fix-vsys -2 \
+  --benchmark-likelihood-calls 8 \
+  --n-jobs 4 \
+  --output retrieval/results/hrccs_likelihood_benchmark_n4
 ```

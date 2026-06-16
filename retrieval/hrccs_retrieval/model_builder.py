@@ -57,6 +57,7 @@ def generate_xcorr_processed_model_array(
     retrieval_config: Mapping[str, Any],
     parameters: Mapping[str, float],
     wavelength_boundaries_micron: Optional[list[float]] = None,
+    atmosphere: Optional[Any] = None,
     logger: Optional[logging.Logger] = None,
 ) -> tuple[Any, dict[str, Any]]:
     """Generate pRT Fe emission and convert it to the working xcorr template array.
@@ -72,6 +73,7 @@ def generate_xcorr_processed_model_array(
         config=retrieval_config,
         parameters=parameters,
         wavelength_boundaries_micron=wavelength_boundaries_micron,
+        atmosphere=atmosphere,
         logger=logger,
     )
     settings = xcorr_processing_settings(retrieval_config)
@@ -139,6 +141,7 @@ def build_prt_xcorr_template(
     retrieval_config: Mapping[str, Any],
     exopipe_config: Any,
     parameters: Mapping[str, float],
+    atmosphere: Optional[Any] = None,
     logger: Optional[logging.Logger] = None,
 ) -> dict[str, Any]:
     """Generate pRT, process it, convolve it, and return an interpolator."""
@@ -146,6 +149,7 @@ def build_prt_xcorr_template(
     model_array, metadata = generate_xcorr_processed_model_array(
         retrieval_config=retrieval_config,
         parameters=parameters,
+        atmosphere=atmosphere,
         logger=logger,
     )
     template = build_template_interpolator(model_array, ghost_res=exopipe_config.ghost_res)
