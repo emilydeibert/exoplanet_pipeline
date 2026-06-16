@@ -373,8 +373,8 @@ def main():
     nights = args.nights if args.nights is not None else config.nights
     cameras = args.cameras if args.cameras is not None else config.camera
 
-    RV = config.RV
-    Kp = config.Kp
+    RV = data["RV"] if "RV" in data.files else config.RV
+    Kp = data["Kp"] if "Kp" in data.files else config.Kp
 
     RV_MIN = config.RV_MIN if hasattr(config, "RV_MIN") else -75
     RV_MAX = config.RV_MAX if hasattr(config, "RV_MAX") else 75
