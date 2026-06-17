@@ -566,7 +566,9 @@ def build_snr_map_for_type(
 
         # Paper definition:
         # Delta CCF = CCF_inj - CCF_obs, noise from CCF_obs.
-        delta_map = pos_crop - obs_crop
+        # Delta recovery in the sign convention used by the plotted/processed maps.
+        # The loaded fmaps have already been multiplied by map_sign.
+        delta_map = obs_crop - pos_crop
         delta_snr_map = delta_map / obs_noise
 
         peak = find_peak(
