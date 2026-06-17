@@ -11,6 +11,29 @@ from typing import Any
 
 import numpy as np
 
+try:
+    import astropy.units as u
+except ImportError:
+    u = None
+
+
+def as_float(value, unit=None):
+    """Convert scalar or astropy Quantity to plain float."""
+    if hasattr(value, "to_value"):
+        if unit is not None:
+            return float(value.to_value(unit))
+        return float(value.value)
+    return float(value)
+
+
+def as_float_array(value, unit=None):
+    """Convert array or astropy Quantity array to plain float numpy array."""
+    if hasattr(value, "to_value"):
+        if unit is not None:
+            return np.asarray(value.to_value(unit), dtype=float)
+        return np.asarray(value.value, dtype=float)
+    return np.asarray(value, dtype=float)
+
 
 # -----------------------------------------------------------------------------
 # Philosophy
@@ -706,8 +729,17 @@ def main():
     RV_crop = RV[rv_mask]
     Kp_crop = Kp[kp_mask]
 
-    expected_kp = args.expected_kp if args.expected_kp is not None else float(params.K_p)
-    expected_rv = args.expected_rv if args.expected_rv is not None else float(params.Vsys)
+    expected_kp = (
+        args.expected_kp
+        if args.expected_kp is not None
+        else as_float(params.K_p, velocity_unit)
+    )
+
+    expected_rv = (
+        args.expected_rv
+        if args.expected_rv is not None
+        else as_float(params.Vsys, velocity_unit)
+    )
 
     base = Path(config.path2reduced)
 
