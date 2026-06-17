@@ -134,6 +134,20 @@ parser.add_argument(
     default=250,
 )
 
+parser.add_argument(
+    "--kp-window",
+    type=float,
+    default=15.0,
+    help="Kp half-width used to decide whether a peak is near the expected location.",
+)
+
+parser.add_argument(
+    "--rv-window",
+    type=float,
+    default=10.0,
+    help="RV half-width used to decide whether a peak is near the expected location.",
+)
+
 args = parser.parse_args()
 
 project_path = Path(args.project_path)
@@ -160,18 +174,18 @@ def get_crop_limits():
     if rv_max is None:
         rv_max = getattr(config, "RV_MAX", 75)
     if kp_min is None:
-        kp_min = getattr(config, "KP_MIN", 1)
+        kp_min = getattr(config, "KP_MIN", 50)
     if kp_max is None:
-        kp_max = getattr(config, "KP_MAX", 300)
+        kp_max = getattr(config, "KP_MAX", 275)
 
     if rv_min is None:
         rv_min = -75
     if rv_max is None:
         rv_max = 75
     if kp_min is None:
-        kp_min = 1
+        kp_min = 50
     if kp_max is None:
-        kp_max = 300
+        kp_max = 275
 
     return float(rv_min), float(rv_max), float(kp_min), float(kp_max)
 
@@ -432,6 +446,101 @@ def find_peak(
         "kp_idx": int(kp_idx),
     }
 
+def find_peak_near_expected(
+    snr_map,
+    RV,
+    Kp,
+    expected_kp,
+    expected_rv,
+    kp_window,
+    rv_window,
+):
+    kp_mask = (
+        (Kp >= expected_kp - kp_window)
+        & (Kp <= expected_kp + kp_window)
+    )
+
+    rv_mask = (
+        (RV >= expected_rv - rv_window)
+        & (RV <= expected_rv + rv_window)
+    )
+
+    if not np.any(kp_mask) or not np.any(rv_mask):
+        return None
+
+    masked = np.full_like(
+        snr_map,
+        np.nan,
+        dtype=float,
+    )
+
+    masked[np.ix_(kp_mask, rv_mask)] = snr_map[np.ix_(kp_mask, rv_mask)]
+
+    if not np.any(np.isfinite(masked)):
+        return None
+
+    return find_peak(
+        masked,
+        RV,
+        Kp,
+    )
+
+
+def get_expected_location_for_type(
+    map_type,
+    Kp,
+):
+    if args.expected_kp is None:
+        return None, None
+
+    expected_kp = float(args.expected_kp)
+    expected_rv = float(args.expected_rv)
+
+    if map_type == "negative":
+        # Negative-injection products may have a negative Kp grid.
+        # If so, mirror the expected positive Kp location.
+        if np.nanmax(Kp) <= 0 and np.nanmin(Kp) < 0:
+            expected_kp = -1.0 * abs(expected_kp)
+
+    return expected_kp, expected_rv
+
+
+def peak_is_near_expected(
+    peak,
+    expected_kp,
+    expected_rv,
+    kp_window,
+    rv_window,
+):
+    if expected_kp is None or expected_rv is None:
+        return True
+
+    return (
+        abs(peak["kp"] - expected_kp) <= kp_window
+        and abs(peak["rv"] - expected_rv) <= rv_window
+    )
+
+
+def peak_is_near_crop_edge(
+    peak,
+    RV,
+    Kp,
+):
+    rv_step = np.nanmedian(np.abs(np.diff(RV))) if len(RV) > 1 else 0.0
+    kp_step = np.nanmedian(np.abs(np.diff(Kp))) if len(Kp) > 1 else 0.0
+
+    near_rv_edge = (
+        abs(peak["rv"] - np.nanmin(RV)) <= rv_step
+        or abs(peak["rv"] - np.nanmax(RV)) <= rv_step
+    )
+
+    near_kp_edge = (
+        abs(peak["kp"] - np.nanmin(Kp)) <= kp_step
+        or abs(peak["kp"] - np.nanmax(Kp)) <= kp_step
+    )
+
+    return bool(near_rv_edge or near_kp_edge)
+
 
 def build_snr_map_for_type(
     model,
@@ -519,8 +628,8 @@ def build_snr_map_for_type(
             kp_max=neg_kp_max,
         )
 
-        # Match diagnoseSysremIterations convention:
-        # use observed-map noise for the negative-injection SNR map.
+        # Use the negative-injection map's own noise estimate.
+        # Then flip the sign so the recovered negative injection appears positive.
         neg_snr_map, neg_noise = calculate_snr_map(
             neg_crop,
             sigma_cut=args.sigma_cut,
@@ -570,11 +679,12 @@ def build_snr_map_for_type(
             kp_max=kp_max,
         )
 
-        # Paper definition:
-        # Delta CCF = CCF_inj - CCF_obs, noise from CCF_obs.
-        # Delta recovery in the sign convention used by the plotted/processed maps.
-        # The loaded fmaps have already been multiplied by map_sign.
+        # In raw CCF terms, delta is often described as injected - observed.
+        # Here the loaded maps have already been multiplied by map_sign.
+        # With the current processed-map sign convention, obs_crop - pos_crop
+        # makes the recovered injected signal positive in the plotted SNR map.
         delta_map = obs_crop - pos_crop
+        delta_map = delta_map - np.nanmedian(delta_map)
         delta_snr_map = delta_map / obs_noise
 
         peak = find_peak(
@@ -663,13 +773,14 @@ def plot_iteration_grid(
             color="black",
         )
 
-        if args.expected_kp is not None:
-            expected_kp = args.expected_kp
-            if map_type == "negative":
-                expected_kp = -1.0 * expected_kp
+        expected_kp, expected_rv = get_expected_location_for_type(
+            map_type=map_type,
+            Kp=Kp,
+        )
 
+        if expected_kp is not None:
             ax.scatter(
-                args.expected_rv,
+                expected_rv,
                 expected_kp,
                 marker="+",
                 s=55,
@@ -729,6 +840,245 @@ def plot_iteration_grid(
     )
 
     plt.close(fig)
+
+
+
+def plot_iteration_peaks(
+    results,
+    ks,
+    model,
+    map_type,
+    nights,
+    cameras,
+    orders,
+    rv_min,
+    rv_max,
+    kp_min,
+    kp_max,
+    savefile,
+):
+    fig, ax = plt.subplots(
+        nrows=1,
+        ncols=1,
+        figsize=(7.2, 4.4),
+    )
+
+    global_snrs = []
+    expected_snrs = []
+
+    good_global_ks = []
+    good_global_snrs = []
+
+    off_expected_ks = []
+    off_expected_snrs = []
+
+    edge_ks = []
+    edge_snrs = []
+
+    peak_summary_rows = []
+
+    for k, result in zip(ks, results):
+        RV = result["RV"]
+        Kp = result["Kp"]
+        snr_map = result["snr_map"]
+        global_peak = result["peak"]
+
+        expected_kp, expected_rv = get_expected_location_for_type(
+            map_type=map_type,
+            Kp=Kp,
+        )
+
+        expected_peak = None
+        if expected_kp is not None:
+            expected_peak = find_peak_near_expected(
+                snr_map=snr_map,
+                RV=RV,
+                Kp=Kp,
+                expected_kp=expected_kp,
+                expected_rv=expected_rv,
+                kp_window=args.kp_window,
+                rv_window=args.rv_window,
+            )
+
+        global_near_expected = peak_is_near_expected(
+            peak=global_peak,
+            expected_kp=expected_kp,
+            expected_rv=expected_rv,
+            kp_window=args.kp_window,
+            rv_window=args.rv_window,
+        )
+
+        global_near_edge = peak_is_near_crop_edge(
+            peak=global_peak,
+            RV=RV,
+            Kp=Kp,
+        )
+
+        global_snrs.append(global_peak["snr"])
+
+        if expected_peak is None:
+            expected_snrs.append(np.nan)
+        else:
+            expected_snrs.append(expected_peak["snr"])
+
+        if global_near_edge:
+            edge_ks.append(k)
+            edge_snrs.append(global_peak["snr"])
+        elif global_near_expected:
+            good_global_ks.append(k)
+            good_global_snrs.append(global_peak["snr"])
+        else:
+            off_expected_ks.append(k)
+            off_expected_snrs.append(global_peak["snr"])
+
+        peak_summary_rows.append(
+            {
+                "k": int(k),
+                "global_snr": float(global_peak["snr"]),
+                "global_kp": float(global_peak["kp"]),
+                "global_rv": float(global_peak["rv"]),
+                "expected_snr": (
+                    None
+                    if expected_peak is None
+                    else float(expected_peak["snr"])
+                ),
+                "expected_peak_kp": (
+                    None
+                    if expected_peak is None
+                    else float(expected_peak["kp"])
+                ),
+                "expected_peak_rv": (
+                    None
+                    if expected_peak is None
+                    else float(expected_peak["rv"])
+                ),
+                "target_expected_kp": (
+                    None
+                    if expected_kp is None
+                    else float(expected_kp)
+                ),
+                "target_expected_rv": (
+                    None
+                    if expected_rv is None
+                    else float(expected_rv)
+                ),
+                "global_near_expected": bool(global_near_expected),
+                "global_near_crop_edge": bool(global_near_edge),
+            }
+        )
+
+    ax.plot(
+        ks,
+        global_snrs,
+        linestyle="-",
+        linewidth=1.2,
+        alpha=0.5,
+        label="global peak",
+    )
+
+    if np.any(np.isfinite(expected_snrs)):
+        ax.plot(
+            ks,
+            expected_snrs,
+            marker="o",
+            linewidth=1.8,
+            label=(
+                "expected-window peak "
+                f"(±{args.kp_window:g} Kp, ±{args.rv_window:g} RV)"
+            ),
+        )
+
+    if args.expected_kp is None:
+        good_label = "global peak"
+    else:
+        good_label = "global peak near expected"
+
+    ax.scatter(
+        good_global_ks,
+        good_global_snrs,
+        marker="o",
+        s=45,
+        color="black",
+        label=good_label,
+    )
+
+    if len(off_expected_ks) > 0:
+        ax.scatter(
+            off_expected_ks,
+            off_expected_snrs,
+            marker="o",
+            s=75,
+            facecolors="none",
+            edgecolors="black",
+            linewidths=1.6,
+            label="global peak off expected",
+        )
+
+    if len(edge_ks) > 0:
+        ax.scatter(
+            edge_ks,
+            edge_snrs,
+            marker="s",
+            s=75,
+            facecolors="none",
+            edgecolors="black",
+            linewidths=1.6,
+            label="global peak near crop edge",
+        )
+
+    for k, snr in zip(off_expected_ks, off_expected_snrs):
+        ax.annotate(
+            "off",
+            xy=(k, snr),
+            xytext=(0, 6),
+            textcoords="offset points",
+            ha="center",
+            fontsize=8,
+        )
+
+    for k, snr in zip(edge_ks, edge_snrs):
+        ax.annotate(
+            "edge",
+            xy=(k, snr),
+            xytext=(0, 6),
+            textcoords="offset points",
+            ha="center",
+            fontsize=8,
+        )
+
+    ax.set_xlabel("SYSREM iteration k")
+    ax.set_ylabel("Peak SNR")
+    ax.set_xticks(list(ks))
+    ax.grid(alpha=0.25)
+    ax.legend(fontsize=8)
+
+    night_str = "_".join([str(n) for n in nights])
+    cam_str = "_".join([str(c) for c in cameras])
+
+    orders_str = (
+        "all orders"
+        if orders is None
+        else f"orders {min(orders)}-{max(orders)}"
+    )
+
+    fig.suptitle(
+        f"{model} {map_type} peak detections | nights={night_str} | cameras={cam_str} | {orders_str}\n"
+        f"RV=[{rv_min}, {rv_max}], Kp=[{kp_min}, {kp_max}] "
+        f"(negative plots mirror Kp limits)",
+        fontsize=12,
+        y=1.02,
+    )
+
+    fig.savefig(
+        savefile,
+        dpi=args.dpi,
+        bbox_inches="tight",
+    )
+
+    plt.close(fig)
+
+    return peak_summary_rows
+
 
 
 def main():
@@ -830,6 +1180,50 @@ def main():
         vmax=args.vmax,
     )
 
+    peak_plot_file = output_dir / f"{basename}_peaks.png"
+    peak_summary_file = output_dir / f"{basename}_peaks_summary.json"
+
+    peak_summary_rows = plot_iteration_peaks(
+        results=results,
+        ks=ks,
+        model=args.model,
+        map_type=args.type,
+        nights=nights,
+        cameras=cameras,
+        orders=args.orders,
+        rv_min=rv_min,
+        rv_max=rv_max,
+        kp_min=kp_min,
+        kp_max=kp_max,
+        savefile=peak_plot_file,
+    )
+
+    with open(peak_summary_file, "w") as f:
+        json.dump(
+            {
+                "model": args.model,
+                "type": args.type,
+                "nights": list(nights),
+                "cameras": list(cameras),
+                "orders": None if args.orders is None else list(args.orders),
+                "ks": [int(k) for k in ks],
+                "rv_min": rv_min,
+                "rv_max": rv_max,
+                "kp_min": kp_min,
+                "kp_max": kp_max,
+                "sigma_cut": args.sigma_cut,
+                "map_sign": args.map_sign,
+                "expected_kp": args.expected_kp,
+                "expected_rv": args.expected_rv,
+                "kp_window": args.kp_window,
+                "rv_window": args.rv_window,
+                "plot_file": str(peak_plot_file),
+                "summary_rows": peak_summary_rows,
+            },
+            f,
+            indent=4,
+        )
+
     summary = {
         "model": args.model,
         "type": args.type,
@@ -860,8 +1254,10 @@ def main():
     print("=" * 60)
     print("Saved")
     print("=" * 60)
-    print(f"Plot    : {plot_file}")
-    print(f"Summary : {summary_file}")
+    print(f"Map plot      : {plot_file}")
+    print(f"Map summary   : {summary_file}")
+    print(f"Peak plot     : {peak_plot_file}")
+    print(f"Peak summary  : {peak_summary_file}")
     print("=" * 60)
     print()
 
