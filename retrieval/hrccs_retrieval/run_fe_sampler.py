@@ -14,8 +14,11 @@ from retrieval.prt_emission_model import setup_logging
 from .data_loading import block_summary, load_hrccs_data, load_project_modules, parse_int_list, split_cli_list
 from .model_builder import build_prt_xcorr_template, load_retrieval_config_and_parameters
 from .sampler_common import (
+    beta_configuration,
+    beta_mode_label,
     draw_benchmark_thetas,
     dynesty_call_count,
+    fixed_parameters_from_config,
     init_sampler_worker,
     log_likelihood_from_state,
     multiprocessing_context,
@@ -23,7 +26,6 @@ from .sampler_common import (
     prior_bounds,
     prior_transform_from_state,
     read_worker_init_records,
-    validate_beta_configuration,
 )
 
 
@@ -100,10 +102,12 @@ def main() -> None:
     )
 
     names = parameter_names(args.sample_kp_vsys, retrieval_config)
-    validate_beta_configuration(names, args.objective)
+    beta_config = beta_configuration(names, retrieval_config, args.objective)
+    yaml_fixed_parameters = fixed_parameters_from_config(retrieval_config)
     bounds = prior_bounds(retrieval_config, names)
     logger.info("Sampling parameters: %s", names)
     logger.info("Fixed Kp=%.3f Vsys=%.3f unless sampled", fixed_kp, fixed_vsys)
+    logger.info("beta mode: %s", beta_mode_label(beta_config))
     logger.info("Dynesty execution mode: %s with n_jobs=%d", "serial" if n_jobs == 1 else "parallel", n_jobs)
 
     worker_init_log_path = output_dir / "fe_hrccs_worker_initialization.jsonl"
@@ -115,12 +119,14 @@ def main() -> None:
         "exopipe_config": SimpleNamespace(ghost_res=float(exopipe_config.ghost_res)),
         "blocks": blocks,
         "initial": initial,
+        "fixed_parameters": yaml_fixed_parameters,
         "names": names,
         "bounds": bounds,
         "fixed_kp": float(fixed_kp),
         "fixed_vsys": float(fixed_vsys),
         "sample_kp_vsys": bool(args.sample_kp_vsys),
         "objective": args.objective,
+        "beta_config": beta_config,
         "cache_prt_atmosphere": n_jobs > 1,
         "worker_init_log_path": str(worker_init_log_path),
     }
@@ -213,6 +219,7 @@ def main() -> None:
             "sysrem_iteration": int(args.k),
             "objective": args.objective,
             "parameter_names": names,
+            "beta_mode": beta_config,
             "benchmark_likelihood_calls": benchmark_calls,
             "n_jobs": int(n_jobs),
             "parallel_mode": "serial" if n_jobs == 1 else "multiprocessing",
@@ -299,6 +306,7 @@ def main() -> None:
 
     best_index = int(np.nanargmax(logl))
     best = {name: float(value) for name, value in zip(names, samples[best_index])}
+    best.update({key: float(value) for key, value in yaml_fixed_parameters.items()})
     if not args.sample_kp_vsys:
         best["Kp"] = float(fixed_kp)
         best["Vsys"] = float(fixed_vsys)
@@ -309,6 +317,8 @@ def main() -> None:
         "sysrem_iteration": int(args.k),
         "objective": args.objective,
         "parameter_names": names,
+        "beta_mode": beta_config,
+        "fixed_parameters": yaml_fixed_parameters,
         "best_fit_parameters": best,
         "best_log_likelihood": float(logl[best_index]),
         "log_evidence": evidence,

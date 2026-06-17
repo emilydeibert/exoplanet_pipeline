@@ -19,6 +19,9 @@ from retrieval.prt_emission_model import setup_logging
 from .data_loading import block_summary, load_hrccs_data, load_project_modules, parse_int_list, split_cli_list
 from .model_builder import build_prt_xcorr_template, load_retrieval_config_and_parameters
 from .sampler_common import (
+    beta_configuration,
+    beta_mode_label,
+    fixed_parameters_from_config,
     init_sampler_worker,
     initialize_walkers,
     log_probability_from_state,
@@ -26,7 +29,6 @@ from .sampler_common import (
     parameter_names,
     prior_bounds,
     read_worker_init_records,
-    validate_beta_configuration,
 )
 
 
@@ -126,25 +128,61 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
         json.dump(payload, handle, indent=2, sort_keys=True, default=default)
 
 
-def summarize_flat_samples(samples: Any, names: list[str]) -> dict[str, Any]:
-    """Return median and 16th/84th percentiles for flat emcee samples."""
+def summarize_flat_samples(
+    samples: Any,
+    names: list[str],
+    bounds: list[tuple[float, float]],
+    logger: Any,
+    edge_fraction_width: float = 0.02,
+    edge_warning_threshold: float = 0.20,
+) -> dict[str, Any]:
+    """Return percentile and prior-edge diagnostics for flat emcee samples."""
 
     import numpy as np
 
     samples = np.asarray(samples, dtype=float)
     summaries: dict[str, Any] = {}
     if samples.size == 0 or samples.shape[0] == 0:
-        for name in names:
-            summaries[name] = {"median": None, "p16": None, "p84": None}
+        for name, _bound in zip(names, bounds):
+            summaries[name] = {
+                "median": None,
+                "p16": None,
+                "p84": None,
+                "fraction_within_2pct_lower_prior": None,
+                "fraction_within_2pct_upper_prior": None,
+            }
         return summaries
 
-    for idx, name in enumerate(names):
+    for idx, (name, (lo, hi)) in enumerate(zip(names, bounds)):
         p16, median, p84 = np.nanpercentile(samples[:, idx], [16.0, 50.0, 84.0])
+        width = float(hi) - float(lo)
+        edge_width = float(edge_fraction_width) * width
+        finite = np.isfinite(samples[:, idx])
+        if np.any(finite):
+            lower_fraction = float(np.mean(samples[finite, idx] <= float(lo) + edge_width))
+            upper_fraction = float(np.mean(samples[finite, idx] >= float(hi) - edge_width))
+        else:
+            lower_fraction = float("nan")
+            upper_fraction = float("nan")
         summaries[name] = {
             "median": float(median),
             "p16": float(p16),
             "p84": float(p84),
+            "fraction_within_2pct_lower_prior": lower_fraction,
+            "fraction_within_2pct_upper_prior": upper_fraction,
         }
+        if lower_fraction > edge_warning_threshold:
+            logger.warning(
+                "parameter %s has substantial posterior mass near lower prior edge: %.3f",
+                name,
+                lower_fraction,
+            )
+        if upper_fraction > edge_warning_threshold:
+            logger.warning(
+                "parameter %s has substantial posterior mass near upper prior edge: %.3f",
+                name,
+                upper_fraction,
+            )
     return summaries
 
 
@@ -278,7 +316,8 @@ def main() -> None:
     initial["Vsys"] = float(fixed_vsys)
 
     names = parameter_names(args.sample_kp_vsys, retrieval_config)
-    validate_beta_configuration(names, args.objective)
+    beta_config = beta_configuration(names, retrieval_config, args.objective)
+    yaml_fixed_parameters = fixed_parameters_from_config(retrieval_config)
     bounds = prior_bounds(retrieval_config, names)
     ndim = len(names)
     n_walkers = validate_args(args, ndim=ndim)
@@ -298,6 +337,7 @@ def main() -> None:
     logger.info("Sampling parameters: %s", names)
     logger.info("Prior bounds: %s", dict(zip(names, bounds)))
     logger.info("Fixed Kp=%.3f Vsys=%.3f unless sampled", fixed_kp, fixed_vsys)
+    logger.info("beta mode: %s", beta_mode_label(beta_config))
     logger.info("emcee execution mode: %s with n_jobs=%d", "serial" if n_jobs == 1 else "parallel", n_jobs)
 
     initial_template = build_prt_xcorr_template(retrieval_config, exopipe_config, initial, logger=logger)
@@ -321,12 +361,14 @@ def main() -> None:
         "exopipe_config": SimpleNamespace(ghost_res=float(exopipe_config.ghost_res)),
         "blocks": blocks,
         "initial": initial,
+        "fixed_parameters": yaml_fixed_parameters,
         "names": names,
         "bounds": bounds,
         "fixed_kp": float(fixed_kp),
         "fixed_vsys": float(fixed_vsys),
         "sample_kp_vsys": bool(args.sample_kp_vsys),
         "objective": args.objective,
+        "beta_config": beta_config,
         "cache_prt_atmosphere": True,
         "worker_init_log_path": str(worker_init_log_path),
     }
@@ -364,6 +406,8 @@ def main() -> None:
             n_walkers=n_walkers,
             initial_spread=float(args.initial_spread),
             seed=args.seed,
+            retrieval_config=retrieval_config,
+            fixed_parameters=yaml_fixed_parameters,
         )
         for idx, name in enumerate(names):
             logger.info(
@@ -450,7 +494,9 @@ def main() -> None:
     flat_samples = backend.get_chain(discard=int(args.burn_in), thin=int(args.thin), flat=True)
     flat_log_probability = backend.get_log_prob(discard=int(args.burn_in), thin=int(args.thin), flat=True)
 
-    fixed_parameters = {} if args.sample_kp_vsys else {"Kp": float(fixed_kp), "Vsys": float(fixed_vsys)}
+    fixed_parameters = dict(yaml_fixed_parameters)
+    if not args.sample_kp_vsys:
+        fixed_parameters.update({"Kp": float(fixed_kp), "Vsys": float(fixed_vsys)})
     best_parameters, best_log_probability = best_parameters_from_chain(
         chain=chain,
         log_probability=log_probability_chain,
@@ -523,6 +569,7 @@ def main() -> None:
         "parameter_names": names,
         "prior_bounds": {name: [float(lo), float(hi)] for name, (lo, hi) in zip(names, bounds)},
         "fixed_parameters": fixed_parameters,
+        "beta_mode": beta_config,
         "sample_kp_vsys": bool(args.sample_kp_vsys),
         "n_walkers": int(n_walkers),
         "n_steps": int(args.n_steps),
@@ -547,7 +594,7 @@ def main() -> None:
         "median_acceptance_fraction": float(np.nanmedian(acceptance_fraction)),
         "autocorrelation_time": autocorr_time,
         "autocorrelation_time_error": autocorr_error,
-        "parameter_summaries": summarize_flat_samples(flat_samples, names),
+        "parameter_summaries": summarize_flat_samples(flat_samples, names, bounds, logger),
         "best_parameters": best_parameters,
         "best_log_probability": best_log_probability,
         "backend_file": str(backend_path),

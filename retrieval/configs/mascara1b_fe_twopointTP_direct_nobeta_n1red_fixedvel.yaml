@@ -1,0 +1,90 @@
+# Staged HRCCS Fe config: direct free two-point T-P, no beta, fixed velocity.
+
+target:
+  name: MASCARA-1b
+
+prt:
+  input_data_path: /home/edeibert/projects/def-ldang05/edeibert/petitRADTRANS/input_data
+  input_data_env_var: PETITRADTRANS_INPUT_DATA
+  require_input_data_path: true
+  require_continuum_opacity_files: true
+
+planet:
+  planet_radius_rj: 1.5
+  star_radius_rsun: 2.1
+  reference_gravity_cgs: 4.1e3
+  reference_pressure_bar: 1.0e-2
+
+pressure_grid:
+  min_bar: 1.0e-6
+  max_bar: 1.0e2
+  n_layers: 100
+
+tp_profile:
+  type: free_two_point_inversion_direct
+  min_delta_T: 100.0
+  min_delta_logP: 0.25
+
+species:
+  active_species: [Fe]
+  Fe:
+    prt_name: Fe
+    abundance_parameter: log10_Fe
+  filling_gas:
+    H2_weight: 0.74
+    He_weight: 0.24
+  mean_molar_mass: 2.33
+
+continuum_contributors: []
+
+continuum:
+  rayleigh_species: []
+  hminus:
+    enabled: false
+    fixed_mass_fractions:
+      H-: 1.0e-10
+      H: 1.0e-4
+      e-: 1.0e-4
+
+model:
+  mode: emission
+  representation: xcorr_processed
+  line_opacity_mode: lbl
+  line_by_line_opacity_sampling: 4
+  wavelength_boundaries_micron: [0.383, 1.0]
+  wavelength_margin_fraction: 0.01
+  xcorr_processed:
+    stellar_temperature: 9360.0
+    stellar_radius_rsun: 1.67
+    vacuum_to_air: auto
+    remove_envelope: true
+    envelope_pixels: 400
+    envelope_poly_order: 4
+
+priors:
+  Kp: [185.0, 210.0]
+  Vsys: [-12.0, 8.0]
+  T_lower: [1000.0, 3500.0]
+  T_upper: [1500.0, 7000.0]
+  logP_lower: [-2.0, 2.0]
+  logP_upper: [-6.0, -2.0]
+  log10_Fe: [-7.5, -2.0]
+  log_model_scale: [-4.0, 4.0]
+
+initial_parameters:
+  Kp: 198.0
+  Vsys: 0.0
+  T_lower: 2200.0
+  T_upper: 4700.0
+  logP_lower: -1.0
+  logP_upper: -4.0
+  log10_Fe: -4.5
+  log_model_scale: 0.0
+
+sampler:
+  sampled_parameters:
+    - T_lower
+    - T_upper
+    - logP_lower
+    - logP_upper
+    - log10_Fe

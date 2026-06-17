@@ -113,35 +113,95 @@ def parameters_from_theta(theta: Any, state: Mapping[str, Any]) -> dict[str, flo
 
     updates = {name: float(value) for name, value in zip(state["names"], theta)}
     parameters = parameters_with_updates(state["initial"], updates)
+    parameters.update({key: float(value) for key, value in state.get("fixed_parameters", {}).items()})
     if not state["sample_kp_vsys"]:
         parameters["Kp"] = float(state["fixed_kp"])
         parameters["Vsys"] = float(state["fixed_vsys"])
     return parameters
 
 
-def beta_from_parameters(parameters: Mapping[str, float]) -> float | None:
-    """Return beta when a beta nuisance parameter is present."""
+def fixed_parameters_from_config(retrieval_config: Mapping[str, Any]) -> dict[str, float]:
+    """Return fixed scalar parameters configured outside the sampled vector."""
 
-    import math
+    fixed = retrieval_config.get("fixed_parameters", {})
+    if fixed is None or fixed == "":
+        return {}
+    if not isinstance(fixed, Mapping):
+        raise ValueError("fixed_parameters must be a YAML mapping when supplied.")
+    return {str(key): float(value) for key, value in fixed.items()}
 
-    if "log_beta" in parameters:
-        return 10.0 ** float(parameters["log_beta"])
-    if "ln_beta" in parameters:
-        return math.exp(float(parameters["ln_beta"]))
-    return None
 
+def beta_configuration(
+    names: Sequence[str],
+    retrieval_config: Mapping[str, Any],
+    objective: str,
+) -> dict[str, Any]:
+    """Resolve disabled/fixed/sampled beta mode from YAML and sampled names."""
 
-def validate_beta_configuration(names: Sequence[str], objective: str) -> None:
-    """Raise clearly when beta is requested for an incompatible objective."""
+    sampled = sorted(BETA_PARAMETER_NAMES.intersection(set(names)))
+    fixed = fixed_parameters_from_config(retrieval_config)
+    fixed_beta = sorted(BETA_PARAMETER_NAMES.intersection(set(fixed)))
+    if len(sampled) > 1:
+        raise ValueError(f"Only one beta parameter may be sampled; got {sampled}.")
+    if len(fixed_beta) > 1:
+        raise ValueError(f"Only one beta parameter may be fixed; got {fixed_beta}.")
+    if sampled and fixed_beta:
+        raise ValueError(
+            f"Beta cannot be both sampled and fixed; sampled={sampled}, fixed={fixed_beta}."
+        )
+    if sampled:
+        mode = {"mode": "sampled", "parameter": sampled[0], "value": None}
+    elif fixed_beta:
+        mode = {"mode": "fixed", "parameter": fixed_beta[0], "value": float(fixed[fixed_beta[0]])}
+    else:
+        mode = {"mode": "disabled", "parameter": None, "value": None}
 
-    requested = sorted(BETA_PARAMETER_NAMES.intersection(set(names)))
-    if not requested:
-        return
+    if mode["mode"] == "disabled":
+        return mode
     if str(objective) != "matched_filter_loglike":
         raise NotImplementedError(
             "beta/log_beta is only implemented for matched_filter_loglike. "
-            f"Requested beta parameter(s) {requested} with objective={objective!r}."
+            f"Requested beta mode {mode} with objective={objective!r}."
         )
+    return mode
+
+
+def beta_from_state(parameters: Mapping[str, float], state: Mapping[str, Any]) -> float | None:
+    """Return beta according to explicit sampler-state beta mode."""
+
+    import math
+
+    beta_cfg = state.get("beta_config", {"mode": "disabled"})
+    mode = beta_cfg.get("mode", "disabled")
+    if mode == "disabled":
+        return None
+
+    name = str(beta_cfg["parameter"])
+    value = float(parameters[name])
+    if name == "log_beta":
+        return 10.0 ** value
+    if name == "ln_beta":
+        return math.exp(value)
+    raise ValueError(f"Unknown beta parameter name {name!r}.")
+
+
+def beta_mode_label(beta_config: Mapping[str, Any]) -> str:
+    """Return a concise beta-mode log label."""
+
+    mode = beta_config.get("mode", "disabled")
+    if mode == "disabled":
+        return "disabled"
+    if mode == "sampled":
+        return f"sampled {beta_config.get('parameter')}"
+    if mode == "fixed":
+        return f"fixed {beta_config.get('parameter')}={float(beta_config.get('value')):.6g}"
+    return str(mode)
+
+
+def validate_beta_configuration(names: Sequence[str], objective: str, retrieval_config: Mapping[str, Any] | None = None) -> None:
+    """Backward-compatible beta validation wrapper."""
+
+    beta_configuration(names, retrieval_config or {}, objective)
 
 
 def log_likelihood_from_state(theta: Any) -> float:
@@ -167,7 +227,7 @@ def log_likelihood_from_state(theta: Any) -> float:
             Kp=parameters["Kp"],
             Vsys=parameters["Vsys"],
             objective=state["objective"],
-            beta=beta_from_parameters(parameters),
+            beta=beta_from_state(parameters, state),
         )
         return float(result["objective_value"])
     except Exception as exc:
@@ -309,6 +369,8 @@ def initialize_walkers(
     n_walkers: int,
     initial_spread: float,
     seed: int | None = None,
+    retrieval_config: Mapping[str, Any] | None = None,
+    fixed_parameters: Mapping[str, float] | None = None,
 ) -> Any:
     """Initialize emcee walkers inside the configured prior volume.
 
@@ -330,17 +392,36 @@ def initialize_walkers(
         raise ValueError("--initial-spread must be non-negative.")
     sigma = np.maximum(widths * spread, widths * 1.0e-12)
 
+    def is_valid(proposal: Any) -> bool:
+        if not np.all((proposal >= lows) & (proposal <= highs) & np.isfinite(proposal)):
+            return False
+        if retrieval_config is None:
+            return True
+        trial = parameters_with_updates(initial, {name: float(value) for name, value in zip(names, proposal)})
+        trial.update({key: float(value) for key, value in dict(fixed_parameters or {}).items()})
+        try:
+            validate_model_parameters(trial, retrieval_config)
+        except Exception:
+            return False
+        return True
+
     walkers = np.empty((int(n_walkers), len(names)), dtype=float)
     for walker_idx in range(int(n_walkers)):
         proposal = centers + rng.normal(0.0, sigma)
-        valid = np.all((proposal >= lows) & (proposal <= highs) & np.isfinite(proposal))
         attempts = 0
-        while not valid and attempts < 1000:
+        while not is_valid(proposal) and attempts < 1000:
             proposal = centers + rng.normal(0.0, sigma)
-            valid = np.all((proposal >= lows) & (proposal <= highs) & np.isfinite(proposal))
             attempts += 1
-        if not valid:
+        attempts = 0
+        while not is_valid(proposal) and attempts < 10000:
             proposal = rng.uniform(lows, highs)
+            attempts += 1
+        if not is_valid(proposal):
+            raise RuntimeError(
+                "Could not initialize all emcee walkers inside the prior volume "
+                "and derived T-P constraints. Check initial_parameters, priors, "
+                "min_delta_T, and min_delta_logP."
+            )
         walkers[walker_idx] = proposal
 
     return walkers

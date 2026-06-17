@@ -285,11 +285,33 @@ points internally; invalid samples are rejected. The temperature points are
 points the profile is linear in log10 pressure; outside them it is constant at
 the nearest endpoint.
 
+For the cleaner direct parameterization, use:
+
+```yaml
+tp_profile:
+  type: free_two_point_inversion_direct
+  min_delta_T: 100.0
+  min_delta_logP: 0.25
+```
+
+This samples `T_lower`, `T_upper`, `logP_lower`, and `logP_upper`, where
+`lower` means deeper/higher pressure. Valid samples must satisfy
+`logP_lower > logP_upper + min_delta_logP` and
+`T_upper > T_lower + min_delta_T`; invalid samples are rejected by the prior.
+
 The HRCCS samplers remain backward-compatible. If `sampler.sampled_parameters`
 is absent, they use the old Fe-only parameter list. If it is present, the YAML
 list controls atmospheric and nuisance parameters, while the CLI still controls
 whether Kp/Vsys are sampled with `--sample-kp-vsys` or inserted from
 `--fix-kp`/`--fix-vsys`.
+
+No-beta direct T-P staged configs:
+
+```text
+retrieval/configs/mascara1b_fe_twopointTP_direct_nobeta_n1red_freevel_narrow.yaml
+retrieval/configs/mascara1b_fe_twopointTP_direct_nobeta_n1red_fixedvel.yaml
+retrieval/configs/mascara1b_fe_twopointTP_direct_nobeta_continuum_n1red_freevel_narrow.yaml
+```
 
 ## Species And Beta
 
@@ -308,11 +330,26 @@ species:
 
 The older `species.line_species` plus `species.prt_names` style still works.
 
-`log_beta` is log10 of a multiplicative noise scale beta. It is implemented for
-`matched_filter_loglike` as sigma -> beta*sigma, adding the beta-dependent
-Gaussian normalization term. At `log_beta = 0`, the historical likelihood value
-is unchanged. Beta is intentionally not implemented for the `ccf_peak_value`
-debug objective.
+`log_beta` is log10 of a multiplicative noise scale beta. Beta is disabled
+unless `log_beta`/`ln_beta` appears in `sampler.sampled_parameters` or in a
+top-level `fixed_parameters` mapping:
+
+```yaml
+fixed_parameters:
+  log_beta: 0.0
+```
+
+When disabled, the likelihood is exactly the historical no-beta likelihood.
+When fixed, beta is not included in parameter names, corner plots, or trace
+plots. When sampled, it is included like any other sampled parameter. The run
+log reports `beta mode: disabled`, `beta mode: fixed log_beta=0`, or
+`beta mode: sampled log_beta`.
+
+The current implementation supports beta only for `matched_filter_loglike`, as
+sigma -> beta*sigma with the beta-dependent Gaussian normalization term. Treat
+beta/noise-scale parameters cautiously for matched-filter HRCCS likelihoods
+unless the objective normalization is scientifically well-defined. Beta is not
+implemented for the `ccf_peak_value` debug objective.
 
 ## Continuum Contributors
 
@@ -325,10 +362,16 @@ continuum_contributors:
   - H2-He
 ```
 
-The wrapper currently accepts the exact pRT contributor names `H2-H2`,
-`H2-He`, and `H-`. Unsupported names raise a clear error instead of being
-ignored. H- also requires fixed mass fractions for `H-`, `H`, and `e-`; keep it
-disabled unless the local pRT input data and interface have been verified.
+The wrapper currently passes the pRT contributor names `H2-H2`, `H2-He`, and
+`H-`; `H2--H2` and `H2--He` are accepted as explicit aliases and logged before
+conversion. Unsupported names raise a clear error instead of being ignored.
+For CIA contributors, the code preflights the configured pRT `input_data` tree
+and fails if local files are not visible, because otherwise pRT may try to
+auto-download through Keeper/Selenium on Narval. Set
+`prt.require_continuum_opacity_files: false` only for an intentional interactive
+opacity-install step. H- also requires fixed mass fractions for `H-`, `H`, and
+`e-`; keep it disabled unless the local pRT input data and interface have been
+verified.
 
 The staged continuum config is:
 
@@ -336,12 +379,12 @@ The staged continuum config is:
 retrieval/configs/mascara1b_fe_twopointTP_beta_continuum_n1red_freevel_narrow.yaml
 ```
 
-Tiny Narval smoke test:
+Tiny Narval smoke test for the no-beta direct T-P continuum config:
 
 ```bash
 python -m retrieval.hrccs_retrieval.run_fe_emcee \
   /home/edeibert/projects/def-ldang05/edeibert/mascara1b \
-  --retrieval-config retrieval/configs/mascara1b_fe_twopointTP_beta_continuum_n1red_freevel_narrow.yaml \
+  --retrieval-config retrieval/configs/mascara1b_fe_twopointTP_direct_nobeta_continuum_n1red_freevel_narrow.yaml \
   --k 7 \
   --nights 20240528 \
   --cameras red \
@@ -361,6 +404,33 @@ python -m retrieval.hrccs_retrieval.run_fe_emcee \
 In `fe_hrccs_emcee.log`, confirm that pRT setup reports:
 
 ```text
+YAML-requested pRT continuum contributors: ['H2-H2', 'H2-He']
 Requested pRT continuum contributors: ['H2-H2', 'H2-He']
 Requested pRT continuum contributors for Radtrans: ['H2-H2', 'H2-He']
 ```
+
+## Kp/Vsys Diagnostic Grid
+
+When an emcee run lands on velocity-prior edges, map the likelihood surface at
+fixed atmospheric parameters:
+
+```bash
+python -m retrieval.hrccs_retrieval.diagnose_kp_vsys_likelihood_grid \
+  /home/edeibert/projects/def-ldang05/edeibert/mascara1b \
+  --retrieval-config retrieval/configs/mascara1b_fe_twopointTP_direct_nobeta_n1red_freevel_narrow.yaml \
+  --k 7 \
+  --nights 20240528 \
+  --cameras red \
+  --orders 2 \
+  --parameters-json retrieval/results/hrccs_emcee_direct_nobeta_freevel/fe_hrccs_emcee_summary.json \
+  --kp-min 180 \
+  --kp-max 215 \
+  --kp-step 1 \
+  --vsys-min -15 \
+  --vsys-max 10 \
+  --vsys-step 1 \
+  --output retrieval/results/hrccs_kp_vsys_diagnostic
+```
+
+The diagnostic writes `kp_vsys_likelihood_grid.npz`,
+`kp_vsys_likelihood_grid.png`, and `kp_vsys_likelihood_grid_summary.json`.

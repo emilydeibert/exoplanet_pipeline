@@ -32,6 +32,14 @@ NM_TO_CM = 1.0e-7
 ANGSTROM_TO_CM = 1.0e-8
 R_JUP_CM = 7.1492e9
 SUPPORTED_GAS_CONTINUUM_CONTRIBUTORS = {"H2-H2", "H2-He", "H-"}
+GAS_CONTINUUM_ALIASES = {
+    "H2--H2": "H2-H2",
+    "H2--He": "H2-He",
+}
+CONTINUUM_OPACITY_SEARCH_TOKENS = {
+    "H2-H2": ["H2-H2", "H2--H2", "H2H2"],
+    "H2-He": ["H2-He", "H2--He", "H2He"],
+}
 
 
 @dataclass
@@ -374,6 +382,61 @@ def free_two_point_inversion_profile(
     )
 
 
+def free_two_point_inversion_direct_profile(
+    pressures_bar: Any,
+    T_lower: float,
+    T_upper: float,
+    logP_lower: float,
+    logP_upper: float,
+    min_delta_logP: float = 0.25,
+    min_delta_T: float = 100.0,
+) -> Any:
+    """Return a direct two-point inversion profile with sampled endpoint T.
+
+    ``lower`` means deeper atmosphere and therefore higher pressure.  The
+    profile is rejected unless ``logP_lower > logP_upper + min_delta_logP`` and
+    ``T_upper > T_lower + min_delta_T``.  Points are not sorted internally.
+    Temperature is linear in log10 pressure between the two points and constant
+    outside the interval.
+    """
+
+    np = require_numpy()
+    pressures_bar = np.asarray(pressures_bar, dtype=float)
+    T_lower = float(T_lower)
+    T_upper = float(T_upper)
+    logP_lower = float(logP_lower)
+    logP_upper = float(logP_upper)
+    min_delta_logP = float(min_delta_logP)
+    min_delta_T = float(min_delta_T)
+
+    if min_delta_logP < 0:
+        raise ValueError("min_delta_logP must be non-negative.")
+    if min_delta_T < 0:
+        raise ValueError("min_delta_T must be non-negative.")
+    if not logP_lower > logP_upper + min_delta_logP:
+        raise ValueError(
+            "Invalid direct two-point T-P ordering: require "
+            f"logP_lower > logP_upper + min_delta_logP, got "
+            f"logP_lower={logP_lower}, logP_upper={logP_upper}, "
+            f"min_delta_logP={min_delta_logP}."
+        )
+    if not T_upper > T_lower + min_delta_T:
+        raise ValueError(
+            "Invalid direct two-point inversion: require "
+            f"T_upper > T_lower + min_delta_T, got T_lower={T_lower}, "
+            f"T_upper={T_upper}, min_delta_T={min_delta_T}."
+        )
+
+    log_p = np.log10(pressures_bar)
+    return np.interp(
+        log_p,
+        [logP_upper, logP_lower],
+        [T_upper, T_lower],
+        left=T_upper,
+        right=T_lower,
+    )
+
+
 def temperature_profile_type(config: Mapping[str, Any]) -> str:
     """Return the configured T-P profile type with backward-compatible default."""
 
@@ -417,9 +480,22 @@ def temperature_profile_from_parameters(
             T_upper_bounds=tp_cfg.get("T_upper_bounds", None),
         )
 
+    if profile_type == "free_two_point_inversion_direct":
+        tp_cfg = config.get("tp_profile", {})
+        return free_two_point_inversion_direct_profile(
+            pressures_bar=pressures_bar,
+            T_lower=float(parameters["T_lower"]),
+            T_upper=float(parameters["T_upper"]),
+            logP_lower=float(parameters["logP_lower"]),
+            logP_upper=float(parameters["logP_upper"]),
+            min_delta_logP=float(tp_cfg.get("min_delta_logP", 0.25)),
+            min_delta_T=float(tp_cfg.get("min_delta_T", 100.0)),
+        )
+
     raise ValueError(
         "Unknown T-P profile type. Use fixed_two_point_inversion, "
-        f"two_point_inversion, or free_two_point_inversion; got {profile_type!r}."
+        "two_point_inversion, free_two_point_inversion, or "
+        f"free_two_point_inversion_direct; got {profile_type!r}."
     )
 
 
@@ -598,9 +674,10 @@ def gas_continuum_contributors(config: Mapping[str, Any]) -> list[str]:
         )
 
     if isinstance(raw_contributors, str):
-        contributors = [raw_contributors]
+        requested = [raw_contributors]
     else:
-        contributors = [str(contributor) for contributor in list(raw_contributors or [])]
+        requested = [str(contributor) for contributor in list(raw_contributors or [])]
+    contributors = [GAS_CONTINUUM_ALIASES.get(contributor, contributor) for contributor in requested]
     unsupported = sorted(set(contributors).difference(SUPPORTED_GAS_CONTINUUM_CONTRIBUTORS))
     if unsupported:
         raise ValueError(
@@ -615,6 +692,107 @@ def gas_continuum_contributors(config: Mapping[str, Any]) -> list[str]:
         contributors.append("H-")
 
     return contributors
+
+
+def requested_gas_continuum_contributors(config: Mapping[str, Any]) -> list[str]:
+    """Return YAML-requested continuum contributor labels before alias mapping."""
+
+    continuum = config.get("continuum", {})
+    if "continuum_contributors" in config:
+        raw_contributors = config.get("continuum_contributors", [])
+    else:
+        raw_contributors = continuum.get(
+            "continuum_contributors",
+            continuum.get("gas_continuum_contributors", []),
+        )
+    if isinstance(raw_contributors, str):
+        return [raw_contributors]
+    return [str(contributor) for contributor in list(raw_contributors or [])]
+
+
+def find_local_continuum_opacity_files(input_data_path: Path, contributor: str, max_matches: int = 20) -> list[Path]:
+    """Best-effort local file search for requested pRT CIA continuum opacities."""
+
+    tokens = CONTINUUM_OPACITY_SEARCH_TOKENS.get(str(contributor), [])
+    if not tokens:
+        return []
+
+    roots = [
+        input_data_path / "opacities" / "continuum",
+        input_data_path / "opacities" / "continuum" / "collision_induced_absorptions",
+        input_data_path / "opacities" / "continuum" / "collision_induced_absorption",
+    ]
+    search_roots = [root for root in roots if root.exists()]
+    if not search_roots and (input_data_path / "opacities").exists():
+        search_roots = [input_data_path / "opacities"]
+
+    matches: list[Path] = []
+    for root in search_roots:
+        for token in tokens:
+            for path in root.rglob(f"*{token}*"):
+                if path.is_file():
+                    matches.append(path)
+                    if len(matches) >= max_matches:
+                        return sorted(set(matches))
+    return sorted(set(matches))
+
+
+def preflight_continuum_opacity_files(
+    config: Mapping[str, Any],
+    contributors: Sequence[str],
+    input_data_path: Optional[Path],
+    logger: Optional[logging.Logger] = None,
+) -> dict[str, list[str]]:
+    """Verify local CIA opacity files before pRT can try auto-downloads."""
+
+    cia_contributors = [
+        contributor for contributor in contributors
+        if contributor in CONTINUUM_OPACITY_SEARCH_TOKENS
+    ]
+    if not cia_contributors:
+        return {}
+
+    prt_cfg = config.get("prt", {})
+    require_local = bool(prt_cfg.get("require_continuum_opacity_files", True))
+    if not require_local:
+        if logger is not None:
+            logger.warning(
+                "Skipping local continuum opacity preflight because "
+                "prt.require_continuum_opacity_files=false."
+            )
+        return {}
+
+    if input_data_path is None:
+        raise RuntimeError(
+            "Continuum contributors were requested, but no pRT input_data path "
+            "is configured. Set prt.input_data_path or PETITRADTRANS_INPUT_DATA "
+            "so local CIA opacities can be checked before pRT initialization."
+        )
+
+    found: dict[str, list[str]] = {}
+    missing: list[str] = []
+    for contributor in cia_contributors:
+        files = find_local_continuum_opacity_files(input_data_path, contributor)
+        if files:
+            found[contributor] = [str(path) for path in files]
+        else:
+            missing.append(contributor)
+
+    if missing:
+        raise RuntimeError(
+            "Missing local pRT continuum opacity file(s) for contributor(s): "
+            f"{missing}. Requested YAML contributors were "
+            f"{requested_gas_continuum_contributors(config)} and pRT contributors "
+            f"were {list(contributors)}. pRT may otherwise try to auto-download "
+            "these opacities via Keeper/Selenium, which is not safe for Narval "
+            "production jobs. Install the CIA files under the configured "
+            f"input_data path ({input_data_path}) or use a no-continuum config."
+        )
+
+    if logger is not None:
+        for contributor, files in found.items():
+            logger.info("Found local continuum opacity for %s: %s", contributor, files[0])
+    return found
 
 
 def reference_gravity_cgs(config: Mapping[str, Any]) -> float:
@@ -673,16 +851,24 @@ def initialize_prt_atmosphere(
             "petitRADTRANS and run retrieval/check_retrieval_environment.py."
         ) from exc
 
-    configure_prt_input_data_path(config, logger=logger)
+    input_data_path = configure_prt_input_data_path(config, logger=logger)
     if logger is not None:
         logger.info("pRT active input_data path: %s", current_prt_input_data_path())
     pressures_bar = build_pressure_grid(config)
     line_species = resolve_prt_species_names(config)
     continuum_species = gas_continuum_contributors(config)
+    requested_continuum_species = requested_gas_continuum_contributors(config)
     wavelength_bounds = _wavelength_boundaries_micron(config, wavelength_boundaries_micron)
     if logger is not None:
         logger.info("Requested pRT line species for Radtrans: %s", line_species)
+        logger.info("YAML-requested pRT continuum contributors: %s", requested_continuum_species)
         logger.info("Requested pRT continuum contributors for Radtrans: %s", continuum_species)
+    preflight_continuum_opacity_files(
+        config=config,
+        contributors=continuum_species,
+        input_data_path=input_data_path,
+        logger=logger,
+    )
 
     kwargs: dict[str, Any] = {
         "pressures": pressures_bar,
@@ -704,8 +890,8 @@ def initialize_prt_atmosphere(
             f"Requested line_species={line_species}, continuum={continuum_species}, "
             f"wavelength_boundaries_micron={wavelength_bounds}, "
             f"pRT input_data={current_prt_input_data_path()}. "
-            "Check that the lbl opacity files exist locally on the cluster, or "
-            "that pRT is allowed to download them before production runs."
+            "Check that the lbl/CIA opacity files exist locally on the cluster. "
+            "Production jobs should not rely on pRT auto-downloads."
         ) from exc
 
 
@@ -747,11 +933,13 @@ def generate_prt_emission_model(
     mean_molar_masses = build_mean_molar_masses(pressures_bar, config)
     line_species = resolve_prt_species_names(config)
     continuum_species = gas_continuum_contributors(config)
+    requested_continuum_species = requested_gas_continuum_contributors(config)
     wavelength_bounds = _wavelength_boundaries_micron(config, wavelength_boundaries_micron)
 
     if logger is not None:
         logger.info("pRT version: %s", getattr(petitRADTRANS, "__version__", get_prt_version()))
         logger.info("Requested pRT line species: %s", line_species)
+        logger.info("YAML-requested pRT continuum contributors: %s", requested_continuum_species)
         logger.info("Requested pRT continuum contributors: %s", continuum_species)
         logger.info("pRT wavelength boundaries: %.6f-%.6f micron", *wavelength_bounds)
 
@@ -1298,15 +1486,14 @@ def parameters_from_config(config: Mapping[str, Any]) -> dict[str, float]:
     """Return fixed initial parameters for the smoke test/grid model."""
 
     params = dict(config.get("initial_parameters", {}))
-    required = [
-        "Kp",
-        "Vsys",
-        "T_deep",
-        "delta_T_inv",
-        "log_model_scale",
-    ]
-    if temperature_profile_type(config) == "free_two_point_inversion":
+    required = ["Kp", "Vsys", "log_model_scale"]
+    profile_type = temperature_profile_type(config)
+    if profile_type in {"fixed_two_point_inversion", "two_point_inversion", "free_two_point_inversion"}:
+        required.extend(["T_deep", "delta_T_inv"])
+    if profile_type == "free_two_point_inversion":
         required.extend(["logP_deep", "logP_upper"])
+    elif profile_type == "free_two_point_inversion_direct":
+        required.extend(["T_lower", "T_upper", "logP_lower", "logP_upper"])
     required.extend(entry["abundance_parameter"] for entry in active_species_entries(config))
     missing = [key for key in required if key not in params]
     if missing:
