@@ -42,6 +42,22 @@ CONTINUUM_OPACITY_SEARCH_TOKENS = {
 }
 
 
+def _continuum_generic_name(value: str) -> Optional[str]:
+    """Return the generic CIA/H- contributor family for a YAML or pRT name."""
+
+    value = str(value)
+    normalized = GAS_CONTINUUM_ALIASES.get(value, value)
+    if normalized in SUPPORTED_GAS_CONTINUUM_CONTRIBUTORS:
+        return normalized
+    if value.startswith("H2--H2") or value.startswith("H2-H2"):
+        return "H2-H2"
+    if value.startswith("H2--He") or value.startswith("H2-He"):
+        return "H2-He"
+    if value == "H-":
+        return "H-"
+    return None
+
+
 @dataclass
 class ConvolvedModel:
     """Instrumentally convolved rest-frame model cached for grid evaluation."""
@@ -661,59 +677,114 @@ def build_mean_molar_masses(pressures_bar: Any, config: Mapping[str, Any]) -> An
     return _constant_profile(mean_molar_mass, pressures_bar)
 
 
-def gas_continuum_contributors(config: Mapping[str, Any]) -> list[str]:
-    """Return pRT continuum opacity contributors."""
-
+def _raw_continuum_contributors(config: Mapping[str, Any]) -> Any:
     continuum = config.get("continuum", {})
     if "continuum_contributors" in config:
-        raw_contributors = config.get("continuum_contributors", [])
-    else:
-        raw_contributors = continuum.get(
-            "continuum_contributors",
-            continuum.get("gas_continuum_contributors", []),
-        )
+        return config.get("continuum_contributors", [])
+    return continuum.get(
+        "continuum_contributors",
+        continuum.get("gas_continuum_contributors", []),
+    )
 
+
+def continuum_contributor_specs(config: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Return normalized continuum contributor specs from YAML.
+
+    Accepted YAML entries are either strings, preserving the old behavior, or
+    mappings with ``yaml_name``, ``prt_name``, and optional absolute ``file``.
+    ``prt_name`` is what will be passed to ``Radtrans``.
+    """
+
+    continuum = config.get("continuum", {})
+    raw_contributors = _raw_continuum_contributors(config)
     if isinstance(raw_contributors, str):
-        requested = [raw_contributors]
+        raw_items = [raw_contributors]
     else:
-        requested = [str(contributor) for contributor in list(raw_contributors or [])]
-    contributors = [GAS_CONTINUUM_ALIASES.get(contributor, contributor) for contributor in requested]
-    unsupported = sorted(set(contributors).difference(SUPPORTED_GAS_CONTINUUM_CONTRIBUTORS))
-    if unsupported:
-        raise ValueError(
-            "Unsupported pRT gas continuum contributor(s) requested: "
-            f"{unsupported}. Supported names in this wrapper are "
-            f"{sorted(SUPPORTED_GAS_CONTINUUM_CONTRIBUTORS)}. Use the exact "
-            "petitRADTRANS contributor names and add wrapper support before "
-            "requesting additional background opacities."
+        raw_items = list(raw_contributors or [])
+
+    specs: list[dict[str, Any]] = []
+    for item in raw_items:
+        if isinstance(item, Mapping):
+            yaml_name = str(item.get("yaml_name", item.get("name", item.get("contributor", ""))))
+            prt_name = str(item.get("prt_name", "") or GAS_CONTINUUM_ALIASES.get(yaml_name, yaml_name))
+            file_value = item.get("file", None)
+        else:
+            yaml_name = str(item)
+            prt_name = GAS_CONTINUUM_ALIASES.get(yaml_name, yaml_name)
+            file_value = None
+
+        generic = _continuum_generic_name(prt_name) or _continuum_generic_name(yaml_name)
+        if generic is None:
+            raise ValueError(
+                "Unsupported pRT gas continuum contributor requested: "
+                f"yaml_name={yaml_name!r}, prt_name={prt_name!r}. Supported "
+                "families in this wrapper are H2-H2, H2-He, and H-."
+            )
+        specs.append(
+            {
+                "yaml_name": yaml_name,
+                "prt_name": prt_name,
+                "generic_name": generic,
+                "file": str(file_value) if file_value not in {None, ""} else None,
+                "explicit": isinstance(item, Mapping),
+            }
         )
 
+    contributors = [spec["prt_name"] for spec in specs]
     if bool(continuum.get("hminus", {}).get("enabled", False)) and "H-" not in contributors:
-        contributors.append("H-")
+        specs.append(
+            {
+                "yaml_name": "H-",
+                "prt_name": "H-",
+                "generic_name": "H-",
+                "file": None,
+                "explicit": False,
+            }
+        )
 
-    return contributors
+    return specs
+
+
+def gas_continuum_contributors(config: Mapping[str, Any]) -> list[str]:
+    """Return pRT continuum opacity contributors passed to Radtrans."""
+
+    return [spec["prt_name"] for spec in continuum_contributor_specs(config)]
+
+
+def gas_continuum_contributor_families(config: Mapping[str, Any]) -> list[str]:
+    """Return generic continuum contributor families used for mass fractions."""
+
+    return [spec["generic_name"] for spec in continuum_contributor_specs(config)]
 
 
 def requested_gas_continuum_contributors(config: Mapping[str, Any]) -> list[str]:
     """Return YAML-requested continuum contributor labels before alias mapping."""
 
-    continuum = config.get("continuum", {})
-    if "continuum_contributors" in config:
-        raw_contributors = config.get("continuum_contributors", [])
-    else:
-        raw_contributors = continuum.get(
-            "continuum_contributors",
-            continuum.get("gas_continuum_contributors", []),
-        )
-    if isinstance(raw_contributors, str):
-        return [raw_contributors]
-    return [str(contributor) for contributor in list(raw_contributors or [])]
+    return [spec["yaml_name"] for spec in continuum_contributor_specs(config)]
 
 
-def find_local_continuum_opacity_files(input_data_path: Path, contributor: str, max_matches: int = 20) -> list[Path]:
+def _continuum_file_matches_prt_name(path: Path, prt_name: str) -> bool:
+    """Return true when an explicit file appears to be the requested opacity."""
+
+    return str(prt_name) in path.name
+
+
+def _unique_sorted_paths(paths: list[Path]) -> list[Path]:
+    return sorted(set(paths))
+
+
+def find_local_continuum_opacity_files(
+    input_data_path: Path,
+    contributor: str,
+    prt_name: Optional[str] = None,
+    max_matches: int = 100,
+) -> list[Path]:
     """Best-effort local file search for requested pRT CIA continuum opacities."""
 
-    tokens = CONTINUUM_OPACITY_SEARCH_TOKENS.get(str(contributor), [])
+    if prt_name and prt_name not in SUPPORTED_GAS_CONTINUUM_CONTRIBUTORS:
+        tokens = [str(prt_name)]
+    else:
+        tokens = CONTINUUM_OPACITY_SEARCH_TOKENS.get(str(contributor), [])
     if not tokens:
         return []
 
@@ -733,8 +804,77 @@ def find_local_continuum_opacity_files(input_data_path: Path, contributor: str, 
                 if path.is_file():
                     matches.append(path)
                     if len(matches) >= max_matches:
-                        return sorted(set(matches))
-    return sorted(set(matches))
+                        return _unique_sorted_paths(matches)
+    return _unique_sorted_paths(matches)
+
+
+def resolved_continuum_opacity_specs(
+    config: Mapping[str, Any],
+    input_data_path: Optional[Path],
+) -> list[dict[str, Any]]:
+    """Resolve explicit/non-interactive local CIA opacity selections."""
+
+    specs = continuum_contributor_specs(config)
+    resolved: list[dict[str, Any]] = []
+    for spec in specs:
+        spec_out = dict(spec)
+        generic = spec["generic_name"]
+        if generic not in CONTINUUM_OPACITY_SEARCH_TOKENS:
+            spec_out["matched_files"] = []
+            spec_out["unique"] = True
+            resolved.append(spec_out)
+            continue
+
+        if input_data_path is None:
+            raise RuntimeError(
+                "Continuum contributors were requested, but no pRT input_data path "
+                "is configured. Set prt.input_data_path or PETITRADTRANS_INPUT_DATA "
+                "so local CIA opacities can be checked before pRT initialization."
+            )
+
+        explicit_file = spec.get("file")
+        if explicit_file is not None:
+            path = Path(str(explicit_file)).expanduser()
+            if not path.exists():
+                raise RuntimeError(
+                    f"Explicit CIA opacity file for {spec['yaml_name']} does not exist: {path}"
+                )
+            if not _continuum_file_matches_prt_name(path, spec["prt_name"]):
+                raise RuntimeError(
+                    f"Explicit CIA opacity file {path} does not appear to match "
+                    f"prt_name={spec['prt_name']!r}. Use a pRT identifier contained "
+                    "in the selected file name."
+                )
+            spec_out["matched_files"] = [str(path)]
+            spec_out["unique"] = True
+            resolved.append(spec_out)
+            continue
+
+        matches = find_local_continuum_opacity_files(
+            input_data_path=input_data_path,
+            contributor=generic,
+            prt_name=spec["prt_name"],
+        )
+        if not matches:
+            raise RuntimeError(
+                "Missing local pRT continuum opacity file for contributor "
+                f"{spec['yaml_name']} (pRT name {spec['prt_name']}). pRT may "
+                "otherwise try to auto-download via Keeper/Selenium. Use a "
+                "no-continuum config or install/select an explicit CIA file."
+            )
+        if len(matches) > 1:
+            raise RuntimeError(
+                "Ambiguous local pRT continuum opacity files for contributor "
+                f"{spec['yaml_name']} (pRT name {spec['prt_name']}): "
+                f"{[str(path) for path in matches]}. Specify an explicit "
+                "continuum_contributors entry with exact prt_name and file so "
+                "pRT cannot prompt interactively in SLURM."
+            )
+
+        spec_out["matched_files"] = [str(matches[0])]
+        spec_out["unique"] = True
+        resolved.append(spec_out)
+    return resolved
 
 
 def preflight_continuum_opacity_files(
@@ -745,11 +885,7 @@ def preflight_continuum_opacity_files(
 ) -> dict[str, list[str]]:
     """Verify local CIA opacity files before pRT can try auto-downloads."""
 
-    cia_contributors = [
-        contributor for contributor in contributors
-        if contributor in CONTINUUM_OPACITY_SEARCH_TOKENS
-    ]
-    if not cia_contributors:
+    if not contributors:
         return {}
 
     prt_cfg = config.get("prt", {})
@@ -762,36 +898,19 @@ def preflight_continuum_opacity_files(
             )
         return {}
 
-    if input_data_path is None:
-        raise RuntimeError(
-            "Continuum contributors were requested, but no pRT input_data path "
-            "is configured. Set prt.input_data_path or PETITRADTRANS_INPUT_DATA "
-            "so local CIA opacities can be checked before pRT initialization."
-        )
-
+    resolved = resolved_continuum_opacity_specs(config, input_data_path)
     found: dict[str, list[str]] = {}
-    missing: list[str] = []
-    for contributor in cia_contributors:
-        files = find_local_continuum_opacity_files(input_data_path, contributor)
+    for spec in resolved:
+        files = list(spec.get("matched_files", []))
         if files:
-            found[contributor] = [str(path) for path in files]
-        else:
-            missing.append(contributor)
-
-    if missing:
-        raise RuntimeError(
-            "Missing local pRT continuum opacity file(s) for contributor(s): "
-            f"{missing}. Requested YAML contributors were "
-            f"{requested_gas_continuum_contributors(config)} and pRT contributors "
-            f"were {list(contributors)}. pRT may otherwise try to auto-download "
-            "these opacities via Keeper/Selenium, which is not safe for Narval "
-            "production jobs. Install the CIA files under the configured "
-            f"input_data path ({input_data_path}) or use a no-continuum config."
-        )
-
-    if logger is not None:
-        for contributor, files in found.items():
-            logger.info("Found local continuum opacity for %s: %s", contributor, files[0])
+            found[spec["prt_name"]] = files
+            if logger is not None:
+                logger.info(
+                    "Continuum opacity selection %s -> %s is non-interactive: %s",
+                    spec["yaml_name"],
+                    spec["prt_name"],
+                    files[0],
+                )
     return found
 
 
@@ -884,6 +1003,13 @@ def initialize_prt_atmosphere(
 
     try:
         return Radtrans(**kwargs)
+    except EOFError as exc:  # pragma: no cover - pRT/opacity dependent
+        raise RuntimeError(
+            "pRT attempted interactive default opacity selection while loading "
+            f"CIA continuum contributor(s) {continuum_species}. Use explicit "
+            "continuum_contributors entries with prt_name/file, or configure "
+            "pRT default CIA files interactively before SLURM production."
+        ) from exc
     except Exception as exc:  # pragma: no cover - pRT/opacity dependent
         raise RuntimeError(
             "Failed to initialize petitRADTRANS Radtrans and load opacities. "

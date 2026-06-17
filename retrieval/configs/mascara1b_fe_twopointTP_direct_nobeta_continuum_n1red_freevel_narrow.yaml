@@ -37,8 +37,12 @@ species:
   mean_molar_mass: 2.33
 
 continuum_contributors:
-  - H2-H2
-  - H2-He
+  - yaml_name: H2-H2
+    prt_name: H2--H2-NatAbund__BoRi.R831_0.6-250mu
+    file: /home/edeibert/projects/def-ldang05/edeibert/petitRADTRANS/input_data/opacities/continuum/collision_induced_absorptions/H2--H2/H2--H2-NatAbund/H2--H2-NatAbund__BoRi.R831_0.6-250mu.ciatable.petitRADTRANS.h5
+  - yaml_name: H2-He
+    prt_name: H2--He-NatAbund__BoRi.DeltaWavenumber2_0.5-500mu
+    file: /home/edeibert/projects/def-ldang05/edeibert/petitRADTRANS/input_data/opacities/continuum/collision_induced_absorptions/H2--He/H2--He-NatAbund/H2--He-NatAbund__BoRi.DeltaWavenumber2_0.5-500mu.ciatable.petitRADTRANS.h5
 
 continuum:
   rayleigh_species: []

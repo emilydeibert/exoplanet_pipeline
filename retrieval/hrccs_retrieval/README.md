@@ -358,16 +358,23 @@ old configs:
 
 ```yaml
 continuum_contributors:
-  - H2-H2
-  - H2-He
+  - yaml_name: H2-H2
+    prt_name: H2--H2-NatAbund__BoRi.R831_0.6-250mu
+    file: /path/to/input_data/opacities/continuum/collision_induced_absorptions/H2--H2/H2--H2-NatAbund/H2--H2-NatAbund__BoRi.R831_0.6-250mu.ciatable.petitRADTRANS.h5
+  - yaml_name: H2-He
+    prt_name: H2--He-NatAbund__BoRi.DeltaWavenumber2_0.5-500mu
+    file: /path/to/input_data/opacities/continuum/collision_induced_absorptions/H2--He/H2--He-NatAbund/H2--He-NatAbund__BoRi.DeltaWavenumber2_0.5-500mu.ciatable.petitRADTRANS.h5
 ```
 
 The wrapper currently passes the pRT contributor names `H2-H2`, `H2-He`, and
 `H-`; `H2--H2` and `H2--He` are accepted as explicit aliases and logged before
 conversion. Unsupported names raise a clear error instead of being ignored.
-For CIA contributors, the code preflights the configured pRT `input_data` tree
-and fails if local files are not visible, because otherwise pRT may try to
-auto-download through Keeper/Selenium on Narval. Set
+For CIA contributors, prefer exact `prt_name` plus `file` entries. Generic
+strings are allowed only when they resolve to exactly one local file; ambiguous
+matches fail before pRT can prompt interactively. The code preflights the
+configured pRT `input_data` tree and fails if local files are not visible,
+because otherwise pRT may try to auto-download or select defaults through
+Keeper/Selenium on Narval. Set
 `prt.require_continuum_opacity_files: false` only for an intentional interactive
 opacity-install step. H- also requires fixed mass fractions for `H-`, `H`, and
 `e-`; keep it disabled unless the local pRT input data and interface have been
@@ -376,8 +383,19 @@ verified.
 The staged continuum config is:
 
 ```text
-retrieval/configs/mascara1b_fe_twopointTP_beta_continuum_n1red_freevel_narrow.yaml
+retrieval/configs/mascara1b_fe_twopointTP_direct_nobeta_continuum_n1red_freevel_narrow.yaml
 ```
+
+Check the continuum selection before submitting a retrieval:
+
+```bash
+python -m retrieval.hrccs_retrieval.check_continuum_opacities \
+  /home/edeibert/projects/def-ldang05/edeibert/mascara1b \
+  --retrieval-config retrieval/configs/mascara1b_fe_twopointTP_direct_nobeta_continuum_n1red_freevel_narrow.yaml
+```
+
+The check prints each YAML name, exact pRT name passed to Radtrans, matched
+local file, and whether the selection is unique/non-interactive.
 
 Tiny Narval smoke test for the no-beta direct T-P continuum config:
 
@@ -405,8 +423,8 @@ In `fe_hrccs_emcee.log`, confirm that pRT setup reports:
 
 ```text
 YAML-requested pRT continuum contributors: ['H2-H2', 'H2-He']
-Requested pRT continuum contributors: ['H2-H2', 'H2-He']
-Requested pRT continuum contributors for Radtrans: ['H2-H2', 'H2-He']
+Requested pRT continuum contributors: ['H2--H2-NatAbund__BoRi.R831_0.6-250mu', 'H2--He-NatAbund__BoRi.DeltaWavenumber2_0.5-500mu']
+Requested pRT continuum contributors for Radtrans: ['H2--H2-NatAbund__BoRi.R831_0.6-250mu', 'H2--He-NatAbund__BoRi.DeltaWavenumber2_0.5-500mu']
 ```
 
 ## Kp/Vsys Diagnostic Grid
