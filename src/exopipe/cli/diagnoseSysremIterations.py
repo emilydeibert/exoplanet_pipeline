@@ -317,7 +317,7 @@ def calculate_noise_from_observed(
 
     This noise is then used for:
       observed SNR = observed / noise_obs
-      negative injection SNR = negative_injection / noise_obs
+      negative injection SNR = negative_injection / noise_neg
       delta CCF SNR = (positive_injection - observed) / noise_obs
     """
 
@@ -417,7 +417,7 @@ def plot_sysrem_summary(
     axes[1].plot(k, neg, marker="o", label="Expected-window peak")
     axes[1].plot(k, neg_global, marker="o", linestyle="--", label="Global peak")
     axes[1].set_ylabel("SNR")
-    axes[1].set_title("Negative injected CCF / observed-map noise")
+    axes[1].set_title("Negative injected CCF / negative-map noise")
     axes[1].legend()
 
     axes[2].plot(k, delta, marker="o", label="Expected-window peak")
@@ -538,17 +538,6 @@ def main():
         if not np.allclose(Kp_obs, Kp_pos):
             raise ValueError("Observed and positive-injection Kp grids do not match.")
 
-        RV_MIN = config.RV_MIN if hasattr(config, "RV_MIN") else -75
-        RV_MAX = config.RV_MAX if hasattr(config, "RV_MAX") else 75
-
-        KP_MIN = getattr(config, "KP_MIN", 1)
-        KP_MAX = getattr(config, "KP_MAX", 300)
-
-        if KP_MIN is None:
-            KP_MIN = 1
-        if KP_MAX is None:
-            KP_MAX = 300
-
         obs_crop, RV_obs_crop, Kp_obs_crop = crop_map_to_grid(
             obs_map,
             RV_obs,
@@ -646,8 +635,8 @@ def main():
             neg_snr_map,
             RV_neg_crop,
             Kp_neg_crop,
-            expected_kp=args.negative_expected_kp,
-            expected_rv=args.negative_expected_rv,
+            expected_kp=negative_expected_kp,
+            expected_rv=negative_expected_rv,
             kp_window=args.kp_window,
             rv_window=args.rv_window,
         )
@@ -742,6 +731,10 @@ def main():
                 "sigma_cut": args.sigma_cut,
                 "map_sign": args.map_sign,
                 "metadata": metadata,
+                "rv_min": RV_MIN,
+                "rv_max": RV_MAX,
+                "kp_min": KP_MIN,
+                "kp_max": KP_MAX,
             },
             f,
             indent=4,
