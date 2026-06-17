@@ -297,7 +297,7 @@ if __name__ == '__main__':
 						fmap_results[idx] = fmap
 
 					np.savez_compressed(
-						f"{config.path2reduced}injected/{night}_{camera}_{model}_{k}_iters_injected_{args.inject_sign}.npz",
+						f"{config.path2reduced}/injected/{night}_{camera}_{model}_{k}_iters_injected_{args.inject_sign}.npz",
 						cmap = cmap_results,
 						fmap = fmap_results,
 						orders = orders_to_correlate,
