@@ -344,7 +344,7 @@ if __name__ == '__main__':
 						fmap_results[idx] = fmap
 
 					np.savez_compressed(
-						f"{config.path2reduced}/injected/{night}_{camera}_{model}_{k}_iters_injected_{args.inject_sign}.npz",
+						f"{config.path2reduced}/injected/{night}_{camera}_{model}_{k}_iters_injected_{args.inject_sign}_scaled_{inject-scale}x.npz",
 						cmap = cmap_results,
 						fmap = fmap_results,
 						orders = orders_to_correlate,
@@ -353,7 +353,8 @@ if __name__ == '__main__':
 						inject_kp = inject_kp,
 						RV = RV,
 						Kp = Kp,
-						inject_sign = args.inject_sign
+						inject_sign = args.inject_sign,
+                        inject-scale = inject-scale
 					)
 
 	main()
