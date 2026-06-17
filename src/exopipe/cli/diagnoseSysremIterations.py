@@ -288,6 +288,24 @@ def crop_map_to_grid(
 
     return signal_map[kp_mask][:, rv_mask], RV[rv_mask], Kp[kp_mask]
 
+def calculate_snr_map(
+    kpvsys_map,
+    sigma_cut=3.0,
+):
+    kpvsys_map = kpvsys_map - np.nanmedian(kpvsys_map)
+
+    clipped = sigma_clip(
+        kpvsys_map,
+        sigma_upper=sigma_cut,
+        sigma_lower=100,
+    )
+
+    noise = np.nanstd(clipped)
+
+    snr_map = kpvsys_map / noise
+
+    return snr_map, noise
+
 
 def calculate_noise_from_observed(
     observed_map,
