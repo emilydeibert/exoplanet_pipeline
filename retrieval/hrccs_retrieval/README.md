@@ -265,3 +265,102 @@ Expected emcee outputs:
 - `fe_hrccs_emcee_summary.json`
 - `fe_hrccs_emcee_corner.png`
 - `fe_hrccs_emcee_trace.png`
+
+## Free Two-Point T-P Profile
+
+New staged configs can opt into a free-pressure inversion profile:
+
+```yaml
+tp_profile:
+  type: free_two_point_inversion
+  min_delta_logP: 0.25
+  T_upper_bounds: [1000.0, 7000.0]
+```
+
+The pressure parameters are `logP_deep` and `logP_upper`, both in log10 bar.
+Higher log pressure is deeper, so valid samples must satisfy
+`logP_deep > logP_upper + min_delta_logP`. The code does not sort pressure
+points internally; invalid samples are rejected. The temperature points are
+`(logP_deep, T_deep)` and `(logP_upper, T_deep + delta_T_inv)`. Between the
+points the profile is linear in log10 pressure; outside them it is constant at
+the nearest endpoint.
+
+The HRCCS samplers remain backward-compatible. If `sampler.sampled_parameters`
+is absent, they use the old Fe-only parameter list. If it is present, the YAML
+list controls atmospheric and nuisance parameters, while the CLI still controls
+whether Kp/Vsys are sampled with `--sample-kp-vsys` or inserted from
+`--fix-kp`/`--fix-vsys`.
+
+## Species And Beta
+
+The new species mapping style is:
+
+```yaml
+species:
+  active_species: [Fe, FeII, Ti, TiII]
+  Fe:
+    prt_name: Fe
+    abundance_parameter: log10_Fe
+  FeII:
+    prt_name: Fe+
+    abundance_parameter: log10_FeII
+```
+
+The older `species.line_species` plus `species.prt_names` style still works.
+
+`log_beta` is log10 of a multiplicative noise scale beta. It is implemented for
+`matched_filter_loglike` as sigma -> beta*sigma, adding the beta-dependent
+Gaussian normalization term. At `log_beta = 0`, the historical likelihood value
+is unchanged. Beta is intentionally not implemented for the `ccf_peak_value`
+debug objective.
+
+## Continuum Contributors
+
+Continuum/background opacity is YAML-controlled and defaults to empty, matching
+old configs:
+
+```yaml
+continuum_contributors:
+  - H2-H2
+  - H2-He
+```
+
+The wrapper currently accepts the exact pRT contributor names `H2-H2`,
+`H2-He`, and `H-`. Unsupported names raise a clear error instead of being
+ignored. H- also requires fixed mass fractions for `H-`, `H`, and `e-`; keep it
+disabled unless the local pRT input data and interface have been verified.
+
+The staged continuum config is:
+
+```text
+retrieval/configs/mascara1b_fe_twopointTP_beta_continuum_n1red_freevel_narrow.yaml
+```
+
+Tiny Narval smoke test:
+
+```bash
+python -m retrieval.hrccs_retrieval.run_fe_emcee \
+  /home/edeibert/projects/def-ldang05/edeibert/mascara1b \
+  --retrieval-config retrieval/configs/mascara1b_fe_twopointTP_beta_continuum_n1red_freevel_narrow.yaml \
+  --k 7 \
+  --nights 20240528 \
+  --cameras red \
+  --orders 2 \
+  --fix-kp 198 \
+  --fix-vsys 0 \
+  --n-walkers 24 \
+  --n-steps 5 \
+  --burn-in 0 \
+  --thin 1 \
+  --n-jobs 1 \
+  --seed 123 \
+  --overwrite \
+  --output retrieval/results/hrccs_emcee_twopointTP_continuum_smoke
+```
+
+In `fe_hrccs_emcee.log`, confirm that pRT setup reports:
+
+```text
+Requested pRT continuum contributors: ['H2-H2', 'H2-He']
+Requested pRT continuum contributors for Radtrans: ['H2-H2', 'H2-He']
+```

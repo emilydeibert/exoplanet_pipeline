@@ -15,13 +15,14 @@ import time
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from retrieval.prt_emission_model import initialize_prt_atmosphere
+from retrieval.prt_emission_model import initialize_prt_atmosphere, validate_model_parameters
 
 from .ccf_likelihood import evaluate_objective
 from .model_builder import build_prt_xcorr_template, parameters_with_updates
 
 
 _SAMPLER_STATE: dict[str, Any] = {}
+BETA_PARAMETER_NAMES = {"log_beta", "ln_beta"}
 
 
 def init_sampler_worker(state: dict[str, Any]) -> None:
@@ -98,7 +99,49 @@ def log_prior_from_state(theta: Any) -> float:
     for value, (lo, hi) in zip(theta, bounds):
         if value < lo or value > hi:
             return -np.inf
+    state = _SAMPLER_STATE
+    parameters = parameters_from_theta(theta, state)
+    try:
+        validate_model_parameters(parameters, state["retrieval_config"])
+    except Exception:
+        return -np.inf
     return 0.0
+
+
+def parameters_from_theta(theta: Any, state: Mapping[str, Any]) -> dict[str, float]:
+    """Build the physical parameter dictionary from sampled theta values."""
+
+    updates = {name: float(value) for name, value in zip(state["names"], theta)}
+    parameters = parameters_with_updates(state["initial"], updates)
+    if not state["sample_kp_vsys"]:
+        parameters["Kp"] = float(state["fixed_kp"])
+        parameters["Vsys"] = float(state["fixed_vsys"])
+    return parameters
+
+
+def beta_from_parameters(parameters: Mapping[str, float]) -> float | None:
+    """Return beta when a beta nuisance parameter is present."""
+
+    import math
+
+    if "log_beta" in parameters:
+        return 10.0 ** float(parameters["log_beta"])
+    if "ln_beta" in parameters:
+        return math.exp(float(parameters["ln_beta"]))
+    return None
+
+
+def validate_beta_configuration(names: Sequence[str], objective: str) -> None:
+    """Raise clearly when beta is requested for an incompatible objective."""
+
+    requested = sorted(BETA_PARAMETER_NAMES.intersection(set(names)))
+    if not requested:
+        return
+    if str(objective) != "matched_filter_loglike":
+        raise NotImplementedError(
+            "beta/log_beta is only implemented for matched_filter_loglike. "
+            f"Requested beta parameter(s) {requested} with objective={objective!r}."
+        )
 
 
 def log_likelihood_from_state(theta: Any) -> float:
@@ -107,13 +150,10 @@ def log_likelihood_from_state(theta: Any) -> float:
     import numpy as np
 
     state = _SAMPLER_STATE
-    updates = {name: float(value) for name, value in zip(state["names"], theta)}
-    parameters = parameters_with_updates(state["initial"], updates)
-    if not state["sample_kp_vsys"]:
-        parameters["Kp"] = float(state["fixed_kp"])
-        parameters["Vsys"] = float(state["fixed_vsys"])
+    parameters = parameters_from_theta(theta, state)
 
     try:
+        validate_model_parameters(parameters, state["retrieval_config"])
         template = build_prt_xcorr_template(
             state["retrieval_config"],
             state["exopipe_config"],
@@ -127,6 +167,7 @@ def log_likelihood_from_state(theta: Any) -> float:
             Kp=parameters["Kp"],
             Vsys=parameters["Vsys"],
             objective=state["objective"],
+            beta=beta_from_parameters(parameters),
         )
         return float(result["objective_value"])
     except Exception as exc:
@@ -203,10 +244,28 @@ def draw_benchmark_thetas(n_calls: int, bounds: Sequence[tuple[float, float]], s
     return theta
 
 
-def parameter_names(sample_kp_vsys: bool) -> list[str]:
-    """Return sampled parameter names for the Fe-only HRCCS retrieval."""
+def parameter_names(sample_kp_vsys: bool, retrieval_config: Mapping[str, Any] | None = None) -> list[str]:
+    """Return sampled parameter names for HRCCS samplers.
 
-    names = ["T_deep", "delta_T_inv", "log10_Fe"]
+    When ``sampler.sampled_parameters`` is absent, the historical Fe-only
+    default is preserved.  When present, the YAML list controls the sampled
+    atmospheric/nuisance parameters, while the CLI still decides whether Kp and
+    Vsys are sampled or inserted as fixed values.
+    """
+
+    configured = None
+    if retrieval_config is not None:
+        sampler_cfg = retrieval_config.get("sampler", {})
+        configured = sampler_cfg.get("sampled_parameters", sampler_cfg.get("hrccs_parameters", None))
+
+    if configured is None:
+        names = ["T_deep", "delta_T_inv", "log10_Fe"]
+        if sample_kp_vsys:
+            names = ["Kp", "Vsys"] + names
+        return names
+
+    names = [str(name) for name in configured]
+    names = [name for name in names if name not in {"Kp", "Vsys"}]
     if sample_kp_vsys:
         names = ["Kp", "Vsys"] + names
     return names

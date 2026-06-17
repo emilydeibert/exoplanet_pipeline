@@ -244,14 +244,33 @@ def evaluate_objective(
     Kp: float,
     Vsys: float,
     objective: str = "matched_filter_loglike",
+    beta: Optional[float] = None,
 ) -> dict[str, Any]:
     """Evaluate the configured HRCCS objective at one parameter point."""
 
     terms = matched_filter_terms(blocks, F_model, Kp=Kp, Vsys=Vsys)
     objective = str(objective)
     if objective == "matched_filter_loglike":
-        value = terms["log_likelihood"]
+        if beta is None:
+            value = terms["log_likelihood"]
+        else:
+            np = require_numpy()
+            beta = float(beta)
+            if beta <= 0 or not np.isfinite(beta):
+                raise ValueError(f"beta must be finite and positive; got {beta}.")
+            # Current log_likelihood is -0.5*chi2_best up to constants.  If
+            # sigma -> beta*sigma, chi2 scales as beta^-2 and the beta-dependent
+            # Gaussian normalization contributes -N log(beta).  At beta=1 this
+            # preserves the exact historical objective value.
+            value = -0.5 * float(terms["chi2_best"]) / (beta * beta)
+            value -= int(terms["n_valid"]) * float(np.log(beta))
     elif objective == "ccf_peak_value":
+        if beta is not None:
+            raise NotImplementedError(
+                "beta/log_beta is only implemented for matched_filter_loglike. "
+                "The ccf_peak_value debug objective has no meaningful variance "
+                "normalization."
+            )
         # Debug-only: this is a signed normalized correlation-like value, not
         # the retrieval likelihood to use for paper-grade runs.
         value = terms["ccf_peak_value"]
@@ -263,6 +282,8 @@ def evaluate_objective(
     out["objective_value"] = float(value)
     out["Kp"] = float(Kp)
     out["Vsys"] = float(Vsys)
+    if beta is not None:
+        out["beta"] = float(beta)
     return out
 
 

@@ -31,6 +31,7 @@ MICRON_TO_CM = 1.0e-4
 NM_TO_CM = 1.0e-7
 ANGSTROM_TO_CM = 1.0e-8
 R_JUP_CM = 7.1492e9
+SUPPORTED_GAS_CONTINUUM_CONTRIBUTORS = {"H2-H2", "H2-He", "H-"}
 
 
 @dataclass
@@ -309,6 +310,140 @@ def two_point_inversion_profile(
     return temperatures
 
 
+def free_two_point_inversion_profile(
+    pressures_bar: Any,
+    T_deep: float,
+    delta_T_inv: float,
+    logP_deep: float,
+    logP_upper: float,
+    min_delta_logP: float = 0.25,
+    allow_negative_delta_T: bool = False,
+    T_upper_bounds: Optional[Sequence[float]] = None,
+) -> Any:
+    """Return a two-point inversion with both pressure points sampled.
+
+    ``logP_deep`` and ``logP_upper`` are log10 pressures in bar.  Higher
+    log-pressure is deeper, so valid samples must satisfy
+    ``logP_deep > logP_upper + min_delta_logP``.  The points are not sorted:
+    invalid ordering is rejected to preserve parameter meaning.
+
+    The sampled temperatures are ``T_deep`` and ``delta_T_inv`` with derived
+    ``T_upper = T_deep + delta_T_inv``.  Temperature is linearly interpolated as
+    a function of log10 pressure between the two sampled points.  Outside the
+    interval, the profile is held constant at the nearest endpoint.
+    """
+
+    np = require_numpy()
+    pressures_bar = np.asarray(pressures_bar, dtype=float)
+    logP_deep = float(logP_deep)
+    logP_upper = float(logP_upper)
+    min_delta_logP = float(min_delta_logP)
+
+    if min_delta_logP < 0:
+        raise ValueError("min_delta_logP must be non-negative.")
+    if not logP_deep > logP_upper + min_delta_logP:
+        raise ValueError(
+            "Invalid free two-point T-P ordering: require "
+            f"logP_deep > logP_upper + min_delta_logP, got "
+            f"logP_deep={logP_deep}, logP_upper={logP_upper}, "
+            f"min_delta_logP={min_delta_logP}."
+        )
+    if delta_T_inv < 0 and not allow_negative_delta_T:
+        raise ValueError(
+            "delta_T_inv is negative but the inversion profile requires "
+            "delta_T_inv >= 0."
+        )
+
+    T_deep = float(T_deep)
+    T_upper = T_deep + float(delta_T_inv)
+    if T_upper_bounds is not None:
+        lower, upper = [float(value) for value in T_upper_bounds]
+        if not lower <= T_upper <= upper:
+            raise ValueError(
+                f"Derived T_upper={T_upper} is outside configured "
+                f"T_upper_bounds=[{lower}, {upper}]."
+            )
+
+    log_p = np.log10(pressures_bar)
+    return np.interp(
+        log_p,
+        [logP_upper, logP_deep],
+        [T_upper, T_deep],
+        left=T_upper,
+        right=T_deep,
+    )
+
+
+def temperature_profile_type(config: Mapping[str, Any]) -> str:
+    """Return the configured T-P profile type with backward-compatible default."""
+
+    if "tp_profile" in config:
+        return str(config.get("tp_profile", {}).get("type", "fixed_two_point_inversion"))
+    return str(config.get("temperature_profile", {}).get("type", "fixed_two_point_inversion"))
+
+
+def temperature_profile_from_parameters(
+    pressures_bar: Any,
+    parameters: Mapping[str, float],
+    config: Mapping[str, Any],
+) -> Any:
+    """Build the configured temperature profile from sampled parameters."""
+
+    profile_type = temperature_profile_type(config)
+    priors = config.get("priors", {})
+    allow_negative_delta_T = bool(priors.get("allow_negative_delta_T_inv_validation", False))
+
+    if profile_type in {"fixed_two_point_inversion", "two_point_inversion"}:
+        tp_cfg = config.get("temperature_profile", {})
+        return two_point_inversion_profile(
+            pressures_bar=pressures_bar,
+            T_deep=float(parameters["T_deep"]),
+            delta_T_inv=float(parameters["delta_T_inv"]),
+            P_upper=float(tp_cfg.get("P_upper_bar", 1.0e-4)),
+            P_deep=float(tp_cfg.get("P_deep_bar", 1.0e-1)),
+            allow_negative_delta_T=allow_negative_delta_T,
+        )
+
+    if profile_type == "free_two_point_inversion":
+        tp_cfg = config.get("tp_profile", {})
+        return free_two_point_inversion_profile(
+            pressures_bar=pressures_bar,
+            T_deep=float(parameters["T_deep"]),
+            delta_T_inv=float(parameters["delta_T_inv"]),
+            logP_deep=float(parameters["logP_deep"]),
+            logP_upper=float(parameters["logP_upper"]),
+            min_delta_logP=float(tp_cfg.get("min_delta_logP", 0.25)),
+            allow_negative_delta_T=allow_negative_delta_T,
+            T_upper_bounds=tp_cfg.get("T_upper_bounds", None),
+        )
+
+    raise ValueError(
+        "Unknown T-P profile type. Use fixed_two_point_inversion, "
+        f"two_point_inversion, or free_two_point_inversion; got {profile_type!r}."
+    )
+
+
+def validate_temperature_profile_parameters(
+    parameters: Mapping[str, float],
+    config: Mapping[str, Any],
+) -> None:
+    """Validate T-P parameters without building the full pRT model."""
+
+    # A tiny pressure array is enough to exercise the same validation logic.
+    np = require_numpy()
+    temperature_profile_from_parameters(
+        pressures_bar=np.asarray([1.0e-6, 1.0, 1.0e2], dtype=float),
+        parameters=parameters,
+        config=config,
+    )
+
+
+def validate_model_parameters(parameters: Mapping[str, float], config: Mapping[str, Any]) -> None:
+    """Validate lightweight parameter constraints before expensive pRT calls."""
+
+    validate_temperature_profile_parameters(parameters, config)
+
+
 def _constant_profile(value: float, pressures_bar: Any) -> Any:
     np = require_numpy()
     return float(value) * np.ones_like(pressures_bar, dtype=float)
@@ -321,13 +456,7 @@ def _species_config(config: Mapping[str, Any]) -> Mapping[str, Any]:
 def resolve_prt_species_names(config: Mapping[str, Any]) -> list[str]:
     """Map configured shorthand species to pRT opacity names."""
 
-    species_cfg = _species_config(config)
-    requested = species_cfg.get("line_species", ["Fe"])
-    mapping = species_cfg.get("prt_names", {})
-
-    names = []
-    for species in requested:
-        names.append(str(mapping.get(species, species)))
+    names = [entry["prt_name"] for entry in active_species_entries(config)]
 
     if not names:
         raise ValueError("At least one line species must be requested.")
@@ -337,6 +466,43 @@ def resolve_prt_species_names(config: Mapping[str, Any]) -> list[str]:
 def _abundance_key_for_species(species: str) -> str:
     clean = species.replace("+", "plus").replace("-", "_").replace(" ", "_")
     return f"log10_{clean}"
+
+
+def active_species_entries(config: Mapping[str, Any]) -> list[dict[str, str]]:
+    """Return active line species with pRT names and abundance parameters.
+
+    Backward-compatible YAML styles supported:
+
+    * old: ``species.line_species`` plus optional ``species.prt_names``;
+    * new: ``species.active_species`` plus per-label mappings such as
+      ``species.FeII.prt_name`` and ``species.FeII.abundance_parameter``.
+    """
+
+    species_cfg = _species_config(config)
+    requested = species_cfg.get("active_species", species_cfg.get("line_species", ["Fe"]))
+    prt_mapping = species_cfg.get("prt_names", {})
+
+    entries: list[dict[str, str]] = []
+    for species in requested:
+        label = str(species)
+        per_species = species_cfg.get(label, {})
+        if not isinstance(per_species, Mapping):
+            per_species = {}
+        prt_name = str(per_species.get("prt_name", prt_mapping.get(label, label)))
+        abundance_parameter = str(
+            per_species.get("abundance_parameter", _abundance_key_for_species(label))
+        )
+        entries.append(
+            {
+                "label": label,
+                "prt_name": prt_name,
+                "abundance_parameter": abundance_parameter,
+            }
+        )
+
+    if not entries:
+        raise ValueError("At least one active line species must be configured.")
+    return entries
 
 
 def build_mass_fractions(
@@ -353,15 +519,14 @@ def build_mass_fractions(
     np = require_numpy()
     pressures_bar = np.asarray(pressures_bar, dtype=float)
     species_cfg = _species_config(config)
-    requested = species_cfg.get("line_species", ["Fe"])
-    prt_mapping = species_cfg.get("prt_names", {})
     filling = species_cfg.get("filling_gas", {})
 
     mass_fractions: dict[str, Any] = {}
     trace_total = np.zeros_like(pressures_bar, dtype=float)
 
-    for species in requested:
-        parameter_name = _abundance_key_for_species(str(species))
+    for entry in active_species_entries(config):
+        species = entry["label"]
+        parameter_name = entry["abundance_parameter"]
         if parameter_name not in parameters:
             raise ValueError(
                 f"Missing abundance parameter {parameter_name!r} for species {species!r}."
@@ -372,14 +537,15 @@ def build_mass_fractions(
                 f"Mass fraction for {species!r} must be in [0, 1); got {abundance}."
             )
 
-        prt_name = str(prt_mapping.get(species, species))
+        prt_name = entry["prt_name"]
         profile = abundance * np.ones_like(pressures_bar, dtype=float)
         mass_fractions[prt_name] = profile
         trace_total += profile
 
     continuum = config.get("continuum", {})
     hminus = continuum.get("hminus", {})
-    if bool(hminus.get("enabled", False)):
+    continuum_contributors = gas_continuum_contributors(config)
+    if bool(hminus.get("enabled", False)) or "H-" in continuum_contributors:
         required = {"H-", "H", "e-"}
         fixed = hminus.get("fixed_mass_fractions", {})
         missing = sorted(required.difference(fixed))
@@ -423,7 +589,27 @@ def gas_continuum_contributors(config: Mapping[str, Any]) -> list[str]:
     """Return pRT continuum opacity contributors."""
 
     continuum = config.get("continuum", {})
-    contributors = list(continuum.get("gas_continuum_contributors", []))
+    if "continuum_contributors" in config:
+        raw_contributors = config.get("continuum_contributors", [])
+    else:
+        raw_contributors = continuum.get(
+            "continuum_contributors",
+            continuum.get("gas_continuum_contributors", []),
+        )
+
+    if isinstance(raw_contributors, str):
+        contributors = [raw_contributors]
+    else:
+        contributors = [str(contributor) for contributor in list(raw_contributors or [])]
+    unsupported = sorted(set(contributors).difference(SUPPORTED_GAS_CONTINUUM_CONTRIBUTORS))
+    if unsupported:
+        raise ValueError(
+            "Unsupported pRT gas continuum contributor(s) requested: "
+            f"{unsupported}. Supported names in this wrapper are "
+            f"{sorted(SUPPORTED_GAS_CONTINUUM_CONTRIBUTORS)}. Use the exact "
+            "petitRADTRANS contributor names and add wrapper support before "
+            "requesting additional background opacities."
+        )
 
     if bool(continuum.get("hminus", {}).get("enabled", False)) and "H-" not in contributors:
         contributors.append("H-")
@@ -494,6 +680,9 @@ def initialize_prt_atmosphere(
     line_species = resolve_prt_species_names(config)
     continuum_species = gas_continuum_contributors(config)
     wavelength_bounds = _wavelength_boundaries_micron(config, wavelength_boundaries_micron)
+    if logger is not None:
+        logger.info("Requested pRT line species for Radtrans: %s", line_species)
+        logger.info("Requested pRT continuum contributors for Radtrans: %s", continuum_species)
 
     kwargs: dict[str, Any] = {
         "pressures": pressures_bar,
@@ -548,18 +737,11 @@ def generate_prt_emission_model(
         ) from exc
 
     pressures_bar = build_pressure_grid(config)
-    tp_cfg = config.get("temperature_profile", {})
-    priors = config.get("priors", {})
 
-    temperatures = two_point_inversion_profile(
+    temperatures = temperature_profile_from_parameters(
         pressures_bar=pressures_bar,
-        T_deep=float(parameters["T_deep"]),
-        delta_T_inv=float(parameters["delta_T_inv"]),
-        P_upper=float(tp_cfg.get("P_upper_bar", 1.0e-4)),
-        P_deep=float(tp_cfg.get("P_deep_bar", 1.0e-1)),
-        allow_negative_delta_T=bool(
-            priors.get("allow_negative_delta_T_inv_validation", False)
-        ),
+        parameters=parameters,
+        config=config,
     )
     mass_fractions = build_mass_fractions(pressures_bar, parameters, config)
     mean_molar_masses = build_mean_molar_masses(pressures_bar, config)
@@ -614,6 +796,7 @@ def generate_prt_emission_model(
     metadata = {
         "pressures_bar": pressures_bar,
         "temperatures": temperatures,
+        "temperature_profile_type": temperature_profile_type(config),
         "mass_fraction_keys": sorted(mass_fractions),
         "line_species": line_species,
         "gas_continuum_contributors": continuum_species,
@@ -1120,9 +1303,11 @@ def parameters_from_config(config: Mapping[str, Any]) -> dict[str, float]:
         "Vsys",
         "T_deep",
         "delta_T_inv",
-        "log10_Fe",
         "log_model_scale",
     ]
+    if temperature_profile_type(config) == "free_two_point_inversion":
+        required.extend(["logP_deep", "logP_upper"])
+    required.extend(entry["abundance_parameter"] for entry in active_species_entries(config))
     missing = [key for key in required if key not in params]
     if missing:
         raise ValueError(f"Missing initial_parameters entries: {missing}.")

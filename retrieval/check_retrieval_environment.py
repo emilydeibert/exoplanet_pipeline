@@ -101,9 +101,16 @@ def set_pRT_input_data_path(path: Path) -> Optional[str]:
 
 def requested_species(config: Mapping[str, Any]) -> list[str]:
     species_cfg = config.get("species", {})
-    requested = species_cfg.get("line_species", ["Fe"])
+    requested = species_cfg.get("active_species", species_cfg.get("line_species", ["Fe"]))
     mapping = species_cfg.get("prt_names", {})
-    return [str(mapping.get(species, species)) for species in requested]
+    out = []
+    for species in requested:
+        entry = species_cfg.get(str(species), {})
+        if isinstance(entry, Mapping) and "prt_name" in entry:
+            out.append(str(entry["prt_name"]))
+        else:
+            out.append(str(mapping.get(species, species)))
+    return out
 
 
 def species_opacity_patterns(input_data_path: Path, species_name: str) -> list[str]:

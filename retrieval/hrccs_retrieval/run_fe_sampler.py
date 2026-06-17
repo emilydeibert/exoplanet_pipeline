@@ -23,6 +23,7 @@ from .sampler_common import (
     prior_bounds,
     prior_transform_from_state,
     read_worker_init_records,
+    validate_beta_configuration,
 )
 
 
@@ -98,7 +99,8 @@ def main() -> None:
         logger=logger,
     )
 
-    names = parameter_names(args.sample_kp_vsys)
+    names = parameter_names(args.sample_kp_vsys, retrieval_config)
+    validate_beta_configuration(names, args.objective)
     bounds = prior_bounds(retrieval_config, names)
     logger.info("Sampling parameters: %s", names)
     logger.info("Fixed Kp=%.3f Vsys=%.3f unless sampled", fixed_kp, fixed_vsys)

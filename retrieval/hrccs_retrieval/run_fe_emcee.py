@@ -26,6 +26,7 @@ from .sampler_common import (
     parameter_names,
     prior_bounds,
     read_worker_init_records,
+    validate_beta_configuration,
 )
 
 
@@ -276,7 +277,8 @@ def main() -> None:
     initial["Kp"] = float(fixed_kp)
     initial["Vsys"] = float(fixed_vsys)
 
-    names = parameter_names(args.sample_kp_vsys)
+    names = parameter_names(args.sample_kp_vsys, retrieval_config)
+    validate_beta_configuration(names, args.objective)
     bounds = prior_bounds(retrieval_config, names)
     ndim = len(names)
     n_walkers = validate_args(args, ndim=ndim)
