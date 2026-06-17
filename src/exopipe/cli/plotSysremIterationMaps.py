@@ -521,7 +521,10 @@ def build_snr_map_for_type(
 
         # Match diagnoseSysremIterations convention:
         # use observed-map noise for the negative-injection SNR map.
-        neg_snr_map = neg_crop / obs_noise
+        neg_snr_map, neg_noise = calculate_snr_map(
+            neg_crop,
+            sigma_cut=args.sigma_cut,
+        )
 
         peak = find_peak(
             neg_snr_map,
@@ -534,7 +537,7 @@ def build_snr_map_for_type(
             "RV": RV_neg_crop,
             "Kp": Kp_neg_crop,
             "peak": peak,
-            "noise": obs_noise,
+            "noise": neg_noise,
             "orders": neg_orders,
         }
 

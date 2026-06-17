@@ -551,8 +551,8 @@ def main():
             kp_max=KP_MAX,
             )
 
-        # For the negative injection, use the negative file's own Kp grid.
-        # If the grid is negative, mirror the positive Kp crop limits.
+        # Negative-injection Kp crop mirrors the positive Kp crop.
+        # For Kp_MIN=50, Kp_MAX=275, this becomes -275 to -50.
         if np.nanmax(Kp_neg) <= 0 and np.nanmin(Kp_neg) < 0:
             NEG_KP_MIN = -1.0 * KP_MAX
             NEG_KP_MAX = -1.0 * KP_MIN
@@ -560,14 +560,20 @@ def main():
             NEG_KP_MIN = KP_MIN
             NEG_KP_MAX = KP_MAX
 
-        neg_crop, RV_neg_crop, Kp_neg_crop = crop_map_to_grid(neg_map,
-            RV_neg,
-            Kp_neg,
+        neg_crop, RV_neg_crop, Kp_neg_crop = crop_map_to_grid(
+            signal_map=neg_map,
+            RV=RV_neg,
+            Kp=Kp_neg,
             rv_min=RV_MIN,
             rv_max=RV_MAX,
             kp_min=NEG_KP_MIN,
             kp_max=NEG_KP_MAX,
-            )
+        )
+
+        print(
+            f"Negative crop: Kp {np.nanmin(Kp_neg_crop):.1f} to {np.nanmax(Kp_neg_crop):.1f}, "
+            f"RV {np.nanmin(RV_neg_crop):.1f} to {np.nanmax(RV_neg_crop):.1f}"
+        )
 
         # This is the Cheverall-style / paper-style delta CCF definition:
         #   Delta CCF = CCF_injected - CCF_observed
@@ -584,9 +590,9 @@ def main():
             noise_obs,
         )
 
-        neg_snr_map = snr_map_from_noise(
+        neg_snr_map, noise_neg = calculate_snr_map(
             neg_crop,
-            noise_obs,
+            sigma_cut=args.sigma_cut,
         )
 
         delta_snr_map = snr_map_from_noise(
@@ -622,8 +628,8 @@ def main():
             neg_snr_map,
             RV_neg_crop,
             Kp_neg_crop,
-            expected_kp=negative_expected_kp,
-            expected_rv=negative_expected_rv,
+            expected_kp=args.negative_expected_kp,
+            expected_rv=args.negative_expected_rv,
             kp_window=args.kp_window,
             rv_window=args.rv_window,
         )
@@ -650,6 +656,7 @@ def main():
             "nights": " ".join([str(n) for n in nights]),
             "cameras": " ".join([str(c) for c in cameras]),
             "noise_obs": float(noise_obs),
+            "noise_neg": noise_neg,
 
             "obs_expected_snr": obs_expected["snr"],
             "obs_expected_kp": obs_expected["kp"],
