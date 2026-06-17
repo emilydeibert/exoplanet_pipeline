@@ -291,7 +291,7 @@ if __name__ == '__main__':
 					phase,
 					reduce_res_inject,
 					planet_motion,
-					scale=inject_scale,
+					strength=inject_scale,
 				)
 
 				#flux, scale = cc.injectModel(wave, flux, phase, reduce_res_inject, planet_motion, scale = inject-scale)
