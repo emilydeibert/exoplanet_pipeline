@@ -31,7 +31,7 @@ def shift2BERV(sysr, wave, error, berv, vsys):
 	sysr_berv_error = np.zeros(np.shape(error))
 	for odx, o in enumerate(sysr):
 		r, re = tools.shift2rest(o, wave[odx][0], -1. * berv * u.km / u.s + vsys, error[odx])
-		sysr_berv[odx] = r 
+		sysr_berv[odx] = r
 		sysr_berv_error[odx] = re
 
 	return sysr_berv, sysr_berv_error
@@ -60,22 +60,22 @@ def process_orders(idx, order, sysr_rest, wave, error_rest, RV, F_model, Kp, pha
 	return idx, cmap, fmap
 
 if __name__ == '__main__':
-	
-	job_id = args.job_id
-	orders_per_job = 15 
-
-	start = job_id * orders_per_job
-	end = start + orders_per_job
 
 	parser = argparse.ArgumentParser()
 	parser.add_argument("project_path", type=str)
 	parser.add_argument("--sysrem-mode", default="full")  # full | single | list
 	parser.add_argument("--k", type=int, default=15)       # used for full/single
 	parser.add_argument("--ks", type=str, default=None)    # e.g. "1,3,5,10"
-
+	parser.add_argument("--job-id", type=int, default=0)
+	
 	args = parser.parse_args()
-
 	project_path = Path(args.project_path)
+	
+	job_id = args.job_id
+	orders_per_job = 15
+
+	start = job_id * orders_per_job
+	end = start + orders_per_job
 
 	config_file = project_path / "config.py"
 	config_spec = importlib.util.spec_from_file_location("config", str(config_file))
