@@ -192,12 +192,12 @@ if __name__ == '__main__':
 		help="Model(s) to process. Default: config.models"
 	)
 
-    parser.add_argument(
-        "--inject-scale",
-        type=int,
-        default=None,
-        help="Scaling factor to multiply the model by when injecting. Default: 1"
-    )
+	parser.add_argument(
+		"--inject-scale",
+		type=float,
+		default=1.0,
+		help="Scaling factor for the injected model amplitude. Default: 1.0"
+	)
 
 	args = parser.parse_args()
 
@@ -277,10 +277,24 @@ if __name__ == '__main__':
 
 				planet_motion = (tools.orbitalMotion(inject_kp, phase) + params.Vsys - (berv * u.km/u.s))
 
-                if not inject-scale:
-                    inject-scale = 1.
+				inject_scale = float(args.inject_scale)
 
-				flux, scale = cc.injectModel(wave, flux, phase, reduce_res_inject, planet_motion, scale = inject-scale)
+				print(
+					f"Injecting {model} into {night} {camera} "
+					f"with sign={args.inject_sign}, Kp={inject_kp:.2f}, "
+					f"scale={inject_scale:g}"
+				)
+
+				flux, scale = cc.injectModel(
+					wave,
+					flux,
+					phase,
+					reduce_res_inject,
+					planet_motion,
+					scale=inject_scale,
+				)
+
+				#flux, scale = cc.injectModel(wave, flux, phase, reduce_res_inject, planet_motion, scale = inject-scale)
 				variance = variance * scale**2
 
 				flux_masked, variance_masked = mask_badpix(flux, variance, badpix)
@@ -343,18 +357,22 @@ if __name__ == '__main__':
 						cmap_results[idx] = cmap 
 						fmap_results[idx] = fmap
 
+					scale_tag = f"{inject_scale:g}".replace(".", "p")
+
 					np.savez_compressed(
-						f"{config.path2reduced}/injected/{night}_{camera}_{model}_{k}_iters_injected_{args.inject_sign}_scaled_{inject-scale}x.npz",
-						cmap = cmap_results,
-						fmap = fmap_results,
-						orders = orders_to_correlate,
-						k = k,
-						model = model,
-						inject_kp = inject_kp,
-						RV = RV,
-						Kp = Kp,
-						inject_sign = args.inject_sign,
-                        inject-scale = inject-scale
+						f"{config.path2reduced}/injected/"
+						f"{night}_{camera}_{model}_{k}_iters_"
+						f"injected_{args.inject_sign}_scaled_{scale_tag}x.npz",
+						cmap=cmap_results,
+						fmap=fmap_results,
+						orders=orders_to_correlate,
+						k=k,
+						model=model,
+						inject_kp=inject_kp,
+						RV=RV,
+						Kp=Kp,
+						inject_sign=args.inject_sign,
+						inject_scale=inject_scale,
 					)
 
 	main()
