@@ -61,7 +61,7 @@ def process_orders(idx, order, sysr_rest, wave, error_rest, RV, F_model, Kp, pha
 
 if __name__ == '__main__':
 	
-	job_id = args.job_
+	job_id = args.job_id
 	orders_per_job = 15 
 
 	start = job_id * orders_per_job
