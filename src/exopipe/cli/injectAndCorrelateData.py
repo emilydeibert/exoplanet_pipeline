@@ -192,6 +192,13 @@ if __name__ == '__main__':
 		help="Model(s) to process. Default: config.models"
 	)
 
+    parser.add_argument(
+        "--inject-scale",
+        type=int,
+        default=None,
+        help="Scaling factor to multiply the model by when injecting. Default: 1"
+    )
+
 	args = parser.parse_args()
 
 	project_path = Path(args.project_path)
@@ -270,7 +277,10 @@ if __name__ == '__main__':
 
 				planet_motion = (tools.orbitalMotion(inject_kp, phase) + params.Vsys - (berv * u.km/u.s))
 
-				flux, scale = cc.injectModel(wave, flux, phase, reduce_res_inject, planet_motion)
+                if not inject-scale:
+                    inject-scale = 1.
+
+				flux, scale = cc.injectModel(wave, flux, phase, reduce_res_inject, planet_motion, scale = inject-scale)
 				variance = variance * scale**2
 
 				flux_masked, variance_masked = mask_badpix(flux, variance, badpix)
