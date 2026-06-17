@@ -732,13 +732,13 @@ def main():
     expected_kp = (
         args.expected_kp
         if args.expected_kp is not None
-        else as_float(params.K_p, velocity_unit)
+        else as_float(params.K_p, "km/s")
     )
 
     expected_rv = (
         args.expected_rv
         if args.expected_rv is not None
-        else as_float(params.Vsys, velocity_unit)
+        else as_float(params.Vsys, "km/s")
     )
 
     base = Path(config.path2reduced)
