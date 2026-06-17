@@ -107,6 +107,11 @@ parser.add_argument(
     default=None,
 )
 
+parser.add_argument("--rv-min", type=float, default=None)
+parser.add_argument("--rv-max", type=float, default=None)
+parser.add_argument("--kp-min", type=float, default=None)
+parser.add_argument("--kp-max", type=float, default=None)
+
 args = parser.parse_args()
 
 
@@ -422,11 +427,19 @@ def main():
     RV = np.asarray(config.RV, dtype=float)
     Kp = np.asarray(config.Kp, dtype=float)
 
-    RV_MIN = config.RV_MIN if hasattr(config, "RV_MIN") else -75
-    RV_MAX = config.RV_MAX if hasattr(config, "RV_MAX") else 75
+    RV_MIN = args.rv_min if args.rv_min is not None else getattr(config, "RV_MIN", -75)
+    RV_MAX = args.rv_max if args.rv_max is not None else getattr(config, "RV_MAX", 75)
+    KP_MIN = args.kp_min if args.kp_min is not None else getattr(config, "KP_MIN", 50)
+    KP_MAX = args.kp_max if args.kp_max is not None else getattr(config, "KP_MAX", 275)
 
-    KP_MIN = config.KP_MIN if hasattr(config, "KP_MIN") else 1
-    KP_MAX = config.KP_MAX if hasattr(config, "KP_MAX") else 300
+    if RV_MIN is None:
+        RV_MIN = -75
+    if RV_MAX is None:
+        RV_MAX = 75
+    if KP_MIN is None:
+        KP_MIN = 50
+    if KP_MAX is None:
+        KP_MAX = 275
 
     rv_mask = (RV >= RV_MIN) & (RV <= RV_MAX)
     kp_mask = (Kp >= KP_MIN) & (Kp <= KP_MAX)
