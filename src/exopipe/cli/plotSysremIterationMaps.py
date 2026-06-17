@@ -526,6 +526,9 @@ def build_snr_map_for_type(
             sigma_cut=args.sigma_cut,
         )
 
+        # Show recovered negative injection as positive.
+        neg_snr_map *= -1.0
+
         peak = find_peak(
             neg_snr_map,
             RV_neg_crop,

@@ -597,10 +597,14 @@ def main():
             noise_obs,
         )
 
-        neg_snr_map, noise_neg = calculate_snr_map(
+        neg_snr_map_raw, noise_neg = calculate_snr_map(
             neg_crop,
             sigma_cut=args.sigma_cut,
         )
+
+        # The injected signal appears as a negative trough in the current map convention.
+        # Flip it so recovered negative injections are positive peaks.
+        neg_recovery_snr_map = -1.0 * neg_snr_map_raw
 
         delta_snr_map = snr_map_from_noise(
             delta_crop,
@@ -626,13 +630,13 @@ def main():
         )
 
         neg_global = find_peak(
-            neg_snr_map,
+            neg_recovery_snr_map,
             RV_neg_crop,
             Kp_neg_crop,
         )
 
         neg_expected = find_peak_near_expected(
-            neg_snr_map,
+            neg_recovery_snr_map,
             RV_neg_crop,
             Kp_neg_crop,
             expected_kp=negative_expected_kp,
