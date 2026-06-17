@@ -148,6 +148,44 @@ parser.add_argument(
     help="RV half-width used to decide whether a peak is near the expected location.",
 )
 
+parser.add_argument(
+    "--peak-ylim-source",
+    choices=["auto", "expected", "global", "all"],
+    default="auto",
+    help=(
+        "Which SNR series sets the y-axis scale for peak-vs-k plots. "
+        "'auto' uses expected-window SNR when available, otherwise global."
+    ),
+)
+
+parser.add_argument(
+    "--peak-band-source",
+    choices=["auto", "expected", "global"],
+    default="auto",
+    help=(
+        "Which SNR series defines the shaded within-1-sigma/within-1-SNR band. "
+        "'auto' uses expected-window SNR when available, otherwise global."
+    ),
+)
+
+parser.add_argument(
+    "--peak-band-sigma",
+    type=float,
+    default=1.0,
+    help=(
+        "Width of shaded plateau band below the maximum peak SNR. "
+        "Default 1.0 means shade max(SNR)-1 to max(SNR). "
+        "Set <=0 to disable."
+    ),
+)
+
+parser.add_argument(
+    "--peak-ylim-padding-frac",
+    type=float,
+    default=0.08,
+    help="Fractional padding above the plotted peak SNR y-limit.",
+)
+
 args = parser.parse_args()
 
 project_path = Path(args.project_path)
@@ -704,6 +742,33 @@ def build_snr_map_for_type(
 
     raise ValueError(f"Unknown map_type: {map_type}")
 
+def finite_array(values):
+    arr = np.asarray(values, dtype=float)
+    return arr[np.isfinite(arr)]
+
+
+def choose_peak_series(global_snrs, expected_snrs, source):
+    global_arr = finite_array(global_snrs)
+    expected_arr = finite_array(expected_snrs)
+
+    if source == "expected":
+        return expected_arr
+
+    if source == "global":
+        return global_arr
+
+    if source == "all":
+        return finite_array(
+            list(global_snrs) + list(expected_snrs)
+        )
+
+    if source == "auto":
+        if len(expected_arr) > 0:
+            return expected_arr
+        return global_arr
+
+    raise ValueError(source)
+
 
 def plot_iteration_grid(
     results,
@@ -1045,6 +1110,72 @@ def plot_iteration_peaks(
             ha="center",
             fontsize=8,
         )
+
+    # ------------------------------------------------------------
+    # Plateau guide: shade points within peak_band_sigma of the
+    # maximum of the chosen peak-SNR series.
+    #
+    # For SYSREM selection, this is usually most useful using the
+    # expected-window peak SNR rather than the global peak SNR.
+    # ------------------------------------------------------------
+
+    band_values = choose_peak_series(
+        global_snrs=global_snrs,
+        expected_snrs=expected_snrs,
+        source=args.peak_band_source,
+    )
+
+    ylim_values = choose_peak_series(
+        global_snrs=global_snrs,
+        expected_snrs=expected_snrs,
+        source=args.peak_ylim_source,
+    )
+
+    if len(band_values) > 0 and args.peak_band_sigma > 0:
+        band_peak = float(np.nanmax(band_values))
+        band_low = band_peak - float(args.peak_band_sigma)
+
+        ax.axhspan(
+            band_low,
+            band_peak,
+            alpha=0.15,
+            label=(
+                f"within {args.peak_band_sigma:g} SNR "
+                f"of max ({band_peak:.2f})"
+            ),
+        )
+
+        ax.axhline(
+            band_peak,
+            linestyle=":",
+            linewidth=1.0,
+            alpha=0.8,
+        )
+
+        ax.axhline(
+            band_low,
+            linestyle="--",
+            linewidth=1.0,
+            alpha=0.8,
+        )
+
+    # ------------------------------------------------------------
+    # Zoom the y-axis so plateaus are visible.
+    # Default: use expected-window SNR if available, otherwise global.
+    # Use --peak-ylim-source all if you do not want high global peaks clipped.
+    # ------------------------------------------------------------
+
+    if len(ylim_values) > 0:
+        y_peak = float(np.nanmax(ylim_values))
+
+        y_pad = args.peak_ylim_padding_frac * max(abs(y_peak), 1.0)
+        y_max = y_peak + y_pad
+
+        # Make sure the top of the shaded band is visible.
+        if len(band_values) > 0 and args.peak_band_sigma > 0:
+            y_max = max(y_max, band_peak + y_pad)
+
+        ax.set_ylim(0.0, y_max)
 
     ax.set_xlabel("SYSREM iteration k")
     ax.set_ylabel("Peak SNR")
