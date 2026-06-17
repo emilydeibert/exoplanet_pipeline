@@ -3,6 +3,14 @@ Author: Emily Deibert
 Last Modified: July 11, 2024
 Description: Extracts raw data and necessary metadata from GHOST files.
 """
+import os
+os.environ["ASTROPY_IERS_AUTO_DOWNLOAD"] = "0"
+os.environ["ASTROPY_IERS_MAX_AGE"] = "none"
+
+from astropy.utils import iers
+iers.conf.auto_download = False
+iers.conf.auto_max_age = None
+iers.IERS_Auto.open()
 
 from astropy.coordinates import SkyCoord, EarthLocation
 from astropy import units as u
@@ -13,7 +21,6 @@ import importlib.util
 import numpy as np
 import glob
 import sys
-import os
 from exopipe import extract
 
 from pathlib import Path
@@ -30,7 +37,7 @@ spec = importlib.util.spec_from_file_location("parameters", str(params_file))
 params = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(params)
 
-location = EarthLocation.of_site('Gemini South')
+location = EarthLocation.from_geodetic(-70.73669333 * u.degree, -30.24075 * u.degree, 2722 * u.m, 'WGS84')
 
 def get_data(files, camera):
 	"""
