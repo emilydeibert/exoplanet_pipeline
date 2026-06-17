@@ -1,3 +1,5 @@
+from concurrent.futures import ProcessPoolExecutor
+from itertools import repeat
 from astropy.convolution import convolve, Gaussian1DKernel
 from astropy import units as u
 from scipy import interpolate
@@ -25,22 +27,45 @@ def correlateModel(srf, wave, RV, Kp, reduce_res, orbital):
 
 def shift2BERV(sysr, wave, error, berv, vsys):
 
-	sysr_berv = np.full_like(sysr, np.nan)
-	sysr_berv_error = np.full_like(error, np.nan)
+	sysr_berv = np.zeros(np.shape(sysr))
+	sysr_berv_error = np.zeros(np.shape(error))
 	for odx, o in enumerate(sysr):
 		r, re = tools.shift2rest(o, wave[odx][0], -1. * berv * u.km / u.s + vsys, error[odx])
 		sysr_berv[odx] = r 
 		sysr_berv_error[odx] = re
 
 	return sysr_berv, sysr_berv_error
-
+		
 
 def main():
 	return
 
 import matplotlib.pyplot as plt
 
+def process_orders(idx, order, sysr_rest, wave, error_rest, RV, F_model, Kp, phase): 
+	#if odx in orders_to_correlate:
+
+	# per order correlation
+	cmap = cc.modelCorrelation_weighted(
+		order_data=sysr_rest[order, :, :],             # (n_exp, n_pix)
+		order_wave=wave[order, 0, :],                  # (n_pix,)
+		order_sigmag=error_rest[order, :, :],          # (n_exp, n_pix)
+		RV=RV,
+		wavMinMax=[np.nanmin(wave[order,0,:]), np.nanmax(wave[order,0,:])],
+		F_model=F_model
+	)
+
+	fmap = cc.finalCorr_stack(Kp, RV, cmap, phase)
+
+	return idx, cmap, fmap
+
 if __name__ == '__main__':
+	
+	job_id = int(sys.argv[2])
+	orders_per_job = 15 
+
+	start = job_id * orders_per_job
+	end = start + orders_per_job
 
 	parser = argparse.ArgumentParser()
 	parser.add_argument("project_path", type=str)
@@ -115,7 +140,10 @@ if __name__ == '__main__':
 				phase = data_array['phase']
 
 				orders_to_correlate = tools.orders2keep(wave, 0.000001, mdl)
-
+					
+				orders_all = orders_to_correlate
+				orders_to_correlate = orders_all[start:end]
+			
 				for k in k_list:
 					sysr_k = sysr[k-1]
 
@@ -126,28 +154,32 @@ if __name__ == '__main__':
 
 					#idx = 0
 
-					#for odx, o in enumerate(sysr_rest):
-					for idx, order in enumerate(orders_to_correlate):
+					tasks = list(enumerate(orders_to_correlate))
 
-						#if odx in orders_to_correlate:
+					# Runs across multiple processes
 
-						# per order correlation
-						cmap = cc.modelCorrelation_weighted(
-						order_data=sysr_rest[order, :, :],             # (n_exp, n_pix)
-						order_wave=wave[order, 0, :],                  # (n_pix,)
-						order_sigmag=error_rest[order, :, :],          # (n_exp, n_pix)
-						RV=RV,
-						wavMinMax=[np.nanmin(wave[order,0,:]), np.nanmax(wave[order,0,:])],
-						F_model=F_model
-						)
+					with ProcessPoolExecutor() as executor:
+						results = list(executor.map(
+							process_orders,
+							(t[0] for t in tasks), #idx
+							(t[1] for t in tasks), #order
+							repeat(sysr_rest),
+							repeat(wave),
+							repeat(error_rest),
+							repeat(RV),
+							repeat(F_model),
+							repeat(Kp),
+							repeat(phase)
+						))
 
-						fmap = cc.finalCorr_stack(Kp, RV, cmap, phase)
-								
-						cmap_results[idx] = cmap 
-						fmap_results[idx] = fmap
+						print(results)
 
-						#idx += 1
+					for order, cmap, fmap in results:
+						idx = np.where(orders_to_correlate == order)[0][0]
 
+						cmap_results[idx] = cmap
+						fmap_results[idx] = fmap	
+				
 					np.savez_compressed(
 						f"{config.path2reduced}/results/{night}_{camera}_{model}_k{k}_iters.npz",
 						cmap = cmap_results,
@@ -158,4 +190,3 @@ if __name__ == '__main__':
 						)
 
 	main()
-
