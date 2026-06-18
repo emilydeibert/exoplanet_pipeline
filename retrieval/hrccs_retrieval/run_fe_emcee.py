@@ -14,7 +14,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from retrieval.prt_emission_model import setup_logging
+from retrieval.prt_emission_model import (
+    derived_temperature_pressure_parameters,
+    setup_logging,
+    temperature_pressure_parameter_report,
+)
 
 from .data_loading import block_summary, load_hrccs_data, load_project_modules, parse_int_list, split_cli_list
 from .model_builder import build_prt_xcorr_template, load_retrieval_config_and_parameters
@@ -29,6 +33,7 @@ from .sampler_common import (
     parameter_names,
     prior_bounds,
     read_worker_init_records,
+    summarize_derived_parameters,
 )
 
 
@@ -339,8 +344,26 @@ def main() -> None:
     logger.info("Fixed Kp=%.3f Vsys=%.3f unless sampled", fixed_kp, fixed_vsys)
     logger.info("beta mode: %s", beta_mode_label(beta_config))
     logger.info("emcee execution mode: %s with n_jobs=%d", "serial" if n_jobs == 1 else "parallel", n_jobs)
+    initial_tp_report = temperature_pressure_parameter_report(
+        {**initial, **yaml_fixed_parameters},
+        retrieval_config,
+    )
+    logger.info(
+        "Initial T-P pressure grid log10(bar): %.6g to %.6g",
+        initial_tp_report["pressure_grid_log10_min"],
+        initial_tp_report["pressure_grid_log10_max"],
+    )
+    logger.info("Initial sampled T-P parameters: %s", initial_tp_report["sampled"])
+    if initial_tp_report["derived"]:
+        logger.info("Initial derived T-P parameters: %s", initial_tp_report["derived"])
 
-    initial_template = build_prt_xcorr_template(retrieval_config, exopipe_config, initial, logger=logger)
+    initial_model_parameters = {**initial, **yaml_fixed_parameters}
+    initial_template = build_prt_xcorr_template(
+        retrieval_config,
+        exopipe_config,
+        initial_model_parameters,
+        logger=logger,
+    )
     blocks = load_hrccs_data(
         config=exopipe_config,
         params=exopipe_params,
@@ -503,6 +526,11 @@ def main() -> None:
         names=names,
         fixed_parameters=fixed_parameters,
     )
+    try:
+        best_derived_parameters = derived_temperature_pressure_parameters(best_parameters, retrieval_config)
+    except Exception as exc:
+        best_derived_parameters = {"error": str(exc)}
+        logger.warning("Could not derive best-fit T-P parameters: %s", exc)
 
     acceptance_fraction = np.asarray(sampler.acceptance_fraction, dtype=float)
     try:
@@ -560,6 +588,13 @@ def main() -> None:
         "worker_initialization_log": str(worker_init_log_path),
     }
 
+    derived_parameter_summaries = summarize_derived_parameters(
+        samples=flat_samples,
+        names=names,
+        initial=initial,
+        fixed_parameters=fixed_parameters,
+        retrieval_config=retrieval_config,
+    )
     summary = {
         "sampler_type": "emcee",
         "project_path": str(args.project_path),
@@ -595,7 +630,10 @@ def main() -> None:
         "autocorrelation_time": autocorr_time,
         "autocorrelation_time_error": autocorr_error,
         "parameter_summaries": summarize_flat_samples(flat_samples, names, bounds, logger),
+        "derived_parameter_summaries": derived_parameter_summaries,
         "best_parameters": best_parameters,
+        "derived_best_parameters": best_derived_parameters,
+        "initial_temperature_pressure_report": initial_tp_report,
         "best_log_probability": best_log_probability,
         "backend_file": str(backend_path),
         "worker_initialization_log": str(worker_init_log_path),
@@ -612,6 +650,8 @@ def main() -> None:
         calls_per_second,
     )
     logger.info("Best parameters: %s", best_parameters)
+    if best_derived_parameters:
+        logger.info("Best derived T-P parameters: %s", best_derived_parameters)
     logger.info("Saved HRCCS emcee outputs to %s", output_dir)
 
 

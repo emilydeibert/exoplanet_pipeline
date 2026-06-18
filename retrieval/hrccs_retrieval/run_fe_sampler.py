@@ -9,7 +9,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from retrieval.prt_emission_model import setup_logging
+from retrieval.prt_emission_model import (
+    derived_temperature_pressure_parameters,
+    setup_logging,
+    temperature_pressure_parameter_report,
+)
 
 from .data_loading import block_summary, load_hrccs_data, load_project_modules, parse_int_list, split_cli_list
 from .model_builder import build_prt_xcorr_template, load_retrieval_config_and_parameters
@@ -26,6 +30,7 @@ from .sampler_common import (
     prior_bounds,
     prior_transform_from_state,
     read_worker_init_records,
+    summarize_derived_parameters,
 )
 
 
@@ -89,7 +94,34 @@ def main() -> None:
         args.nlive = min(int(args.nlive), 25)
         args.maxcall = 200 if args.maxcall is None else min(int(args.maxcall), 200)
 
-    initial_template = build_prt_xcorr_template(retrieval_config, exopipe_config, initial, logger=logger)
+    names = parameter_names(args.sample_kp_vsys, retrieval_config)
+    beta_config = beta_configuration(names, retrieval_config, args.objective)
+    yaml_fixed_parameters = fixed_parameters_from_config(retrieval_config)
+    bounds = prior_bounds(retrieval_config, names)
+    logger.info("Sampling parameters: %s", names)
+    logger.info("Fixed Kp=%.3f Vsys=%.3f unless sampled", fixed_kp, fixed_vsys)
+    logger.info("beta mode: %s", beta_mode_label(beta_config))
+    logger.info("Dynesty execution mode: %s with n_jobs=%d", "serial" if n_jobs == 1 else "parallel", n_jobs)
+    initial_tp_report = temperature_pressure_parameter_report(
+        {**initial, **yaml_fixed_parameters},
+        retrieval_config,
+    )
+    logger.info(
+        "Initial T-P pressure grid log10(bar): %.6g to %.6g",
+        initial_tp_report["pressure_grid_log10_min"],
+        initial_tp_report["pressure_grid_log10_max"],
+    )
+    logger.info("Initial sampled T-P parameters: %s", initial_tp_report["sampled"])
+    if initial_tp_report["derived"]:
+        logger.info("Initial derived T-P parameters: %s", initial_tp_report["derived"])
+
+    initial_model_parameters = {**initial, **yaml_fixed_parameters}
+    initial_template = build_prt_xcorr_template(
+        retrieval_config,
+        exopipe_config,
+        initial_model_parameters,
+        logger=logger,
+    )
     blocks = load_hrccs_data(
         config=exopipe_config,
         params=exopipe_params,
@@ -100,15 +132,6 @@ def main() -> None:
         orders=parse_int_list(args.orders),
         logger=logger,
     )
-
-    names = parameter_names(args.sample_kp_vsys, retrieval_config)
-    beta_config = beta_configuration(names, retrieval_config, args.objective)
-    yaml_fixed_parameters = fixed_parameters_from_config(retrieval_config)
-    bounds = prior_bounds(retrieval_config, names)
-    logger.info("Sampling parameters: %s", names)
-    logger.info("Fixed Kp=%.3f Vsys=%.3f unless sampled", fixed_kp, fixed_vsys)
-    logger.info("beta mode: %s", beta_mode_label(beta_config))
-    logger.info("Dynesty execution mode: %s with n_jobs=%d", "serial" if n_jobs == 1 else "parallel", n_jobs)
 
     worker_init_log_path = output_dir / "fe_hrccs_worker_initialization.jsonl"
     worker_init_log_path.write_text("", encoding="utf-8")
@@ -310,6 +333,21 @@ def main() -> None:
     if not args.sample_kp_vsys:
         best["Kp"] = float(fixed_kp)
         best["Vsys"] = float(fixed_vsys)
+    try:
+        best_derived_parameters = derived_temperature_pressure_parameters(best, retrieval_config)
+    except Exception as exc:
+        best_derived_parameters = {"error": str(exc)}
+        logger.warning("Could not derive best-fit T-P parameters: %s", exc)
+    fixed_for_summary = dict(yaml_fixed_parameters)
+    if not args.sample_kp_vsys:
+        fixed_for_summary.update({"Kp": float(fixed_kp), "Vsys": float(fixed_vsys)})
+    derived_parameter_summaries = summarize_derived_parameters(
+        samples=samples,
+        names=names,
+        initial=initial,
+        fixed_parameters=fixed_for_summary,
+        retrieval_config=retrieval_config,
+    )
 
     summary = {
         "project_path": str(args.project_path),
@@ -320,6 +358,9 @@ def main() -> None:
         "beta_mode": beta_config,
         "fixed_parameters": yaml_fixed_parameters,
         "best_fit_parameters": best,
+        "derived_best_fit_parameters": best_derived_parameters,
+        "derived_parameter_summaries": derived_parameter_summaries,
+        "initial_temperature_pressure_report": initial_tp_report,
         "best_log_likelihood": float(logl[best_index]),
         "log_evidence": evidence,
         "nlive": int(args.nlive),
@@ -352,6 +393,8 @@ def main() -> None:
         logger.warning("corner is not installed; skipping corner plot.")
 
     logger.info("Sampler complete. Best parameters: %s", best)
+    if best_derived_parameters:
+        logger.info("Best derived T-P parameters: %s", best_derived_parameters)
     logger.info("Saved HRCCS sampler outputs to %s", output_dir)
 
 

@@ -15,7 +15,11 @@ import time
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from retrieval.prt_emission_model import initialize_prt_atmosphere, validate_model_parameters
+from retrieval.prt_emission_model import (
+    derived_temperature_pressure_parameters,
+    initialize_prt_atmosphere,
+    validate_model_parameters,
+)
 
 from .ccf_likelihood import evaluate_objective
 from .model_builder import build_prt_xcorr_template, parameters_with_updates
@@ -118,6 +122,63 @@ def parameters_from_theta(theta: Any, state: Mapping[str, Any]) -> dict[str, flo
         parameters["Kp"] = float(state["fixed_kp"])
         parameters["Vsys"] = float(state["fixed_vsys"])
     return parameters
+
+
+def parameters_from_sample(
+    sample: Any,
+    names: Sequence[str],
+    initial: Mapping[str, float],
+    fixed_parameters: Mapping[str, float] | None = None,
+) -> dict[str, float]:
+    """Build a parameter dictionary from one sampled vector for summaries."""
+
+    updates = {name: float(value) for name, value in zip(names, sample)}
+    parameters = parameters_with_updates(initial, updates)
+    parameters.update({key: float(value) for key, value in dict(fixed_parameters or {}).items()})
+    return parameters
+
+
+def summarize_derived_parameters(
+    samples: Any,
+    names: Sequence[str],
+    initial: Mapping[str, float],
+    fixed_parameters: Mapping[str, float],
+    retrieval_config: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return percentile summaries for derived non-sampled T-P parameters."""
+
+    import numpy as np
+
+    samples = np.asarray(samples, dtype=float)
+    if samples.size == 0:
+        return {}
+    if samples.ndim == 1:
+        samples = samples.reshape(1, -1)
+
+    collected: dict[str, list[float]] = {}
+    for row in samples:
+        try:
+            parameters = parameters_from_sample(row, names, initial, fixed_parameters)
+            derived = derived_temperature_pressure_parameters(parameters, retrieval_config)
+        except Exception:
+            continue
+        for key, value in derived.items():
+            value = float(value)
+            if np.isfinite(value):
+                collected.setdefault(str(key), []).append(value)
+
+    summaries: dict[str, Any] = {}
+    for key, values in collected.items():
+        if not values:
+            continue
+        p16, median, p84 = np.nanpercentile(np.asarray(values, dtype=float), [16.0, 50.0, 84.0])
+        summaries[key] = {
+            "median": float(median),
+            "p16": float(p16),
+            "p84": float(p84),
+            "n_valid": int(len(values)),
+        }
+    return summaries
 
 
 def fixed_parameters_from_config(retrieval_config: Mapping[str, Any]) -> dict[str, float]:

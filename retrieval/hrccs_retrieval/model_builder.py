@@ -13,6 +13,7 @@ from retrieval.model_processing import (
     resolve_bool_option,
 )
 from retrieval.prt_emission_model import (
+    derived_temperature_pressure_parameters,
     generate_prt_emission_model,
     load_yaml_config,
     parameters_from_config,
@@ -29,6 +30,17 @@ def parameters_with_updates(base_parameters: Mapping[str, float], updates: Optio
         if value is not None:
             parameters[key] = float(value)
     return parameters
+
+
+def parameters_with_derived_tp(
+    parameters: Mapping[str, float],
+    retrieval_config: Mapping[str, Any],
+) -> dict[str, float]:
+    """Return parameters plus derived direct T-P endpoint values when needed."""
+
+    model_parameters = {key: float(value) for key, value in dict(parameters).items()}
+    model_parameters.update(derived_temperature_pressure_parameters(model_parameters, retrieval_config))
+    return model_parameters
 
 
 def xcorr_processing_settings(retrieval_config: Mapping[str, Any]) -> dict[str, Any]:
@@ -69,9 +81,10 @@ def generate_xcorr_processed_model_array(
 
     np = require_numpy()
     start = time.perf_counter()
+    model_parameters = parameters_with_derived_tp(parameters, retrieval_config)
     wavelengths_cm, raw_flux, prt_metadata = generate_prt_emission_model(
         config=retrieval_config,
-        parameters=parameters,
+        parameters=model_parameters,
         wavelength_boundaries_micron=wavelength_boundaries_micron,
         atmosphere=atmosphere,
         logger=logger,
@@ -87,7 +100,7 @@ def generate_xcorr_processed_model_array(
     metadata = {
         "prt": prt_metadata,
         "xcorr_processing": processed.metadata,
-        "parameters": {key: float(value) for key, value in parameters.items()},
+        "parameters": {key: float(value) for key, value in model_parameters.items()},
         "seconds": float(time.perf_counter() - start),
     }
     if logger is not None:

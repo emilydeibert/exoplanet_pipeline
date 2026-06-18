@@ -289,6 +289,36 @@ def build_pressure_grid(config: Mapping[str, Any]) -> Any:
     return np.logspace(math.log10(p_min), math.log10(p_max), n_layers)
 
 
+def pressure_grid_log10_bounds(config: Mapping[str, Any]) -> tuple[float, float]:
+    """Return the actual configured pRT pressure-grid bounds in log10(bar)."""
+
+    np = require_numpy()
+    pressures_bar = np.asarray(build_pressure_grid(config), dtype=float)
+    finite = np.isfinite(pressures_bar) & (pressures_bar > 0)
+    if not finite.any():
+        raise ValueError("Configured pressure grid has no finite positive pressures.")
+    log_pressures = np.log10(pressures_bar[finite])
+    return float(np.nanmin(log_pressures)), float(np.nanmax(log_pressures))
+
+
+def _validate_log_pressure_inside_grid(
+    name: str,
+    log_pressure_bar: float,
+    grid_log_min: float,
+    grid_log_max: float,
+) -> None:
+    """Raise when a log10(bar) pressure point falls outside the pRT grid."""
+
+    value = float(log_pressure_bar)
+    tol = 1.0e-12
+    if value < float(grid_log_min) - tol or value > float(grid_log_max) + tol:
+        raise ValueError(
+            f"{name}={value:.6g} is outside the configured pRT pressure grid "
+            f"[{float(grid_log_min):.6g}, {float(grid_log_max):.6g}] log10(bar). "
+            "Adjust the prior/fixed value or extend pressure_grid explicitly."
+        )
+
+
 def two_point_inversion_profile(
     pressures_bar: Any,
     T_deep: float,
@@ -453,6 +483,154 @@ def free_two_point_inversion_direct_profile(
     )
 
 
+def free_two_point_inversion_delta_parameters(
+    parameters: Mapping[str, float],
+    config: Mapping[str, Any],
+) -> dict[str, float]:
+    """Validate and derive direct two-point T-P parameters from delta form.
+
+    The Guo-like delta parameterization samples ``T_lower``,
+    ``delta_T_inv``, ``logP_upper``, and ``delta_logP``.  This helper derives
+    ``T_upper = T_lower + delta_T_inv`` and
+    ``logP_lower = logP_upper + delta_logP`` while enforcing that both pressure
+    points lie inside the configured pRT pressure grid.
+    """
+
+    tp_cfg = config.get("tp_profile", {})
+    priors = config.get("priors", {})
+    allow_negative_delta_T = bool(priors.get("allow_negative_delta_T_inv_validation", False))
+
+    T_lower = float(parameters["T_lower"])
+    delta_T_inv = float(parameters["delta_T_inv"])
+    logP_upper = float(parameters["logP_upper"])
+    delta_logP = float(parameters["delta_logP"])
+    min_delta_T = float(tp_cfg.get("min_delta_T", 0.0))
+    min_delta_logP = float(tp_cfg.get("min_delta_logP", 0.0))
+
+    if min_delta_T < 0:
+        raise ValueError("min_delta_T must be non-negative.")
+    if min_delta_logP < 0:
+        raise ValueError("min_delta_logP must be non-negative.")
+    if not allow_negative_delta_T and not delta_T_inv > min_delta_T:
+        raise ValueError(
+            "Invalid delta two-point inversion: require "
+            f"delta_T_inv > min_delta_T, got delta_T_inv={delta_T_inv}, "
+            f"min_delta_T={min_delta_T}."
+        )
+    if not delta_logP > min_delta_logP:
+        raise ValueError(
+            "Invalid delta two-point pressure separation: require "
+            f"delta_logP > min_delta_logP, got delta_logP={delta_logP}, "
+            f"min_delta_logP={min_delta_logP}."
+        )
+
+    T_upper = T_lower + delta_T_inv
+    logP_lower = logP_upper + delta_logP
+    if not logP_upper < logP_lower:
+        raise ValueError(
+            "Invalid delta two-point T-P ordering: require "
+            f"logP_upper < logP_lower, got logP_upper={logP_upper}, "
+            f"logP_lower={logP_lower}."
+        )
+
+    T_upper_bounds = tp_cfg.get("T_upper_bounds", None)
+    if T_upper_bounds is None and "T_upper_max" in tp_cfg:
+        T_upper_bounds = [float("-inf"), float(tp_cfg["T_upper_max"])]
+    if T_upper_bounds is not None:
+        lower, upper = [float(value) for value in T_upper_bounds]
+        if not lower <= T_upper <= upper:
+            raise ValueError(
+                f"Derived T_upper={T_upper} is outside configured "
+                f"T_upper_bounds=[{lower}, {upper}]."
+            )
+
+    grid_log_min, grid_log_max = pressure_grid_log10_bounds(config)
+    _validate_log_pressure_inside_grid("logP_upper", logP_upper, grid_log_min, grid_log_max)
+    _validate_log_pressure_inside_grid("logP_lower", logP_lower, grid_log_min, grid_log_max)
+
+    return {
+        "T_lower": T_lower,
+        "delta_T_inv": delta_T_inv,
+        "T_upper": T_upper,
+        "logP_upper": logP_upper,
+        "delta_logP": delta_logP,
+        "logP_lower": logP_lower,
+        "min_delta_T": min_delta_T,
+        "min_delta_logP": min_delta_logP,
+        "pressure_grid_log10_min": grid_log_min,
+        "pressure_grid_log10_max": grid_log_max,
+    }
+
+
+def derived_temperature_pressure_parameters(
+    parameters: Mapping[str, float],
+    config: Mapping[str, Any],
+) -> dict[str, float]:
+    """Return derived T-P parameters that are not independently sampled."""
+
+    profile_type = temperature_profile_type(config)
+    if profile_type == "free_two_point_inversion_delta":
+        derived = free_two_point_inversion_delta_parameters(parameters, config)
+        return {
+            "T_upper": float(derived["T_upper"]),
+            "logP_lower": float(derived["logP_lower"]),
+        }
+    return {}
+
+
+def temperature_pressure_parameter_report(
+    parameters: Mapping[str, float],
+    config: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return sampled/derived T-P quantities for logs and JSON summaries."""
+
+    profile_type = temperature_profile_type(config)
+    grid_log_min, grid_log_max = pressure_grid_log10_bounds(config)
+    report: dict[str, Any] = {
+        "profile_type": profile_type,
+        "pressure_grid_log10_min": grid_log_min,
+        "pressure_grid_log10_max": grid_log_max,
+        "sampled": {},
+        "derived": {},
+    }
+
+    if profile_type == "free_two_point_inversion_delta":
+        derived = free_two_point_inversion_delta_parameters(parameters, config)
+        report["sampled"] = {
+            "T_lower": float(derived["T_lower"]),
+            "delta_T_inv": float(derived["delta_T_inv"]),
+            "logP_upper": float(derived["logP_upper"]),
+            "delta_logP": float(derived["delta_logP"]),
+        }
+        report["derived"] = {
+            "T_upper": float(derived["T_upper"]),
+            "logP_lower": float(derived["logP_lower"]),
+        }
+    elif profile_type == "free_two_point_inversion_direct":
+        report["sampled"] = {
+            key: float(parameters[key])
+            for key in ("T_lower", "T_upper", "logP_lower", "logP_upper")
+            if key in parameters
+        }
+    elif profile_type == "free_two_point_inversion":
+        T_deep = float(parameters["T_deep"])
+        delta_T_inv = float(parameters["delta_T_inv"])
+        report["sampled"] = {
+            "T_deep": T_deep,
+            "delta_T_inv": delta_T_inv,
+            "logP_deep": float(parameters["logP_deep"]),
+            "logP_upper": float(parameters["logP_upper"]),
+        }
+        report["derived"] = {"T_upper": T_deep + delta_T_inv}
+    else:
+        report["sampled"] = {
+            key: float(parameters[key])
+            for key in ("T_deep", "delta_T_inv")
+            if key in parameters
+        }
+    return report
+
+
 def temperature_profile_type(config: Mapping[str, Any]) -> str:
     """Return the configured T-P profile type with backward-compatible default."""
 
@@ -508,10 +686,23 @@ def temperature_profile_from_parameters(
             min_delta_T=float(tp_cfg.get("min_delta_T", 100.0)),
         )
 
+    if profile_type == "free_two_point_inversion_delta":
+        derived = free_two_point_inversion_delta_parameters(parameters, config)
+        return free_two_point_inversion_direct_profile(
+            pressures_bar=pressures_bar,
+            T_lower=derived["T_lower"],
+            T_upper=derived["T_upper"],
+            logP_lower=derived["logP_lower"],
+            logP_upper=derived["logP_upper"],
+            min_delta_logP=derived["min_delta_logP"],
+            min_delta_T=derived["min_delta_T"],
+        )
+
     raise ValueError(
         "Unknown T-P profile type. Use fixed_two_point_inversion, "
         "two_point_inversion, free_two_point_inversion, or "
-        f"free_two_point_inversion_direct; got {profile_type!r}."
+        "free_two_point_inversion_direct, or "
+        f"free_two_point_inversion_delta; got {profile_type!r}."
     )
 
 
@@ -521,10 +712,10 @@ def validate_temperature_profile_parameters(
 ) -> None:
     """Validate T-P parameters without building the full pRT model."""
 
-    # A tiny pressure array is enough to exercise the same validation logic.
-    np = require_numpy()
+    # Use the actual configured pRT pressure grid so free-pressure modes cannot
+    # quietly propose points outside the model grid.
     temperature_profile_from_parameters(
-        pressures_bar=np.asarray([1.0e-6, 1.0, 1.0e2], dtype=float),
+        pressures_bar=build_pressure_grid(config),
         parameters=parameters,
         config=config,
     )
@@ -1068,6 +1259,15 @@ def generate_prt_emission_model(
         logger.info("YAML-requested pRT continuum contributors: %s", requested_continuum_species)
         logger.info("Requested pRT continuum contributors: %s", continuum_species)
         logger.info("pRT wavelength boundaries: %.6f-%.6f micron", *wavelength_bounds)
+        tp_report = temperature_pressure_parameter_report(parameters, config)
+        logger.info(
+            "T-P pressure grid log10(bar): %.6g to %.6g",
+            tp_report["pressure_grid_log10_min"],
+            tp_report["pressure_grid_log10_max"],
+        )
+        logger.info("T-P sampled parameters: %s", tp_report["sampled"])
+        if tp_report["derived"]:
+            logger.info("T-P derived parameters: %s", tp_report["derived"])
 
     if atmosphere is None:
         atmosphere = initialize_prt_atmosphere(
@@ -1111,6 +1311,7 @@ def generate_prt_emission_model(
         "pressures_bar": pressures_bar,
         "temperatures": temperatures,
         "temperature_profile_type": temperature_profile_type(config),
+        "temperature_pressure_report": temperature_pressure_parameter_report(parameters, config),
         "mass_fraction_keys": sorted(mass_fractions),
         "line_species": line_species,
         "gas_continuum_contributors": continuum_species,
@@ -1620,6 +1821,8 @@ def parameters_from_config(config: Mapping[str, Any]) -> dict[str, float]:
         required.extend(["logP_deep", "logP_upper"])
     elif profile_type == "free_two_point_inversion_direct":
         required.extend(["T_lower", "T_upper", "logP_lower", "logP_upper"])
+    elif profile_type == "free_two_point_inversion_delta":
+        required.extend(["T_lower", "delta_T_inv", "logP_upper", "delta_logP"])
     required.extend(entry["abundance_parameter"] for entry in active_species_entries(config))
     missing = [key for key in required if key not in params]
     if missing:

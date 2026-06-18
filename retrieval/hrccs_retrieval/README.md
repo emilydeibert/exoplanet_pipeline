@@ -299,6 +299,31 @@ This samples `T_lower`, `T_upper`, `logP_lower`, and `logP_upper`, where
 `logP_lower > logP_upper + min_delta_logP` and
 `T_upper > T_lower + min_delta_T`; invalid samples are rejected by the prior.
 
+The preferred free-pressure test mode is now the Guo-like delta-pressure
+parameterization:
+
+```yaml
+tp_profile:
+  type: free_two_point_inversion_delta
+  min_delta_T: 0.0
+  min_delta_logP: 0.25
+  T_upper_bounds: [0.0, 7000.0]
+```
+
+This samples `T_lower`, `delta_T_inv`, `logP_upper`, and `delta_logP`, then
+derives:
+
+```text
+T_upper = T_lower + delta_T_inv
+logP_lower = logP_upper + delta_logP
+```
+
+The derived pressure points must satisfy `logP_upper < logP_lower`, both must
+fall inside the configured pRT pressure grid, and `delta_logP` must be larger
+than `min_delta_logP`. For the staged delta-pressure configs, the pressure grid
+runs from `1e-8` to `1` bar, so `logP_lower` is capped at `0.0` unless a future
+config explicitly extends the pRT grid deeper.
+
 The HRCCS samplers remain backward-compatible. If `sampler.sampled_parameters`
 is absent, they use the old Fe-only parameter list. If it is present, the YAML
 list controls atmospheric and nuisance parameters, while the CLI still controls
@@ -312,6 +337,59 @@ retrieval/configs/mascara1b_fe_twopointTP_direct_nobeta_n1red_freevel_narrow.yam
 retrieval/configs/mascara1b_fe_twopointTP_direct_nobeta_n1red_fixedvel.yaml
 retrieval/configs/mascara1b_fe_twopointTP_direct_nobeta_continuum_n1red_freevel_narrow.yaml
 ```
+
+Delta-pressure staged configs:
+
+```text
+retrieval/configs/mascara1b_fe_twopointTP_deltaP_nobeta_continuum_n1red_freevel_narrow.yaml
+retrieval/configs/mascara1b_fe_twopointTP_deltaP_nobeta_continuum_n1red_fixedP.yaml
+```
+
+Fixed-pressure Narval smoke test:
+
+```bash
+python -m retrieval.hrccs_retrieval.run_fe_emcee \
+  /home/edeibert/projects/def-ldang05/edeibert/mascara1b \
+  --retrieval-config retrieval/configs/mascara1b_fe_twopointTP_deltaP_nobeta_continuum_n1red_fixedP.yaml \
+  --k 4 \
+  --nights 20240528 \
+  --cameras red \
+  --orders 2 \
+  --sample-kp-vsys \
+  --n-walkers 32 \
+  --n-steps 5 \
+  --burn-in 0 \
+  --thin 1 \
+  --n-jobs 1 \
+  --seed 123 \
+  --overwrite \
+  --output retrieval/results/hrccs_emcee_deltaP_fixedP_smoke_k4
+```
+
+Free-pressure Narval smoke test:
+
+```bash
+python -m retrieval.hrccs_retrieval.run_fe_emcee \
+  /home/edeibert/projects/def-ldang05/edeibert/mascara1b \
+  --retrieval-config retrieval/configs/mascara1b_fe_twopointTP_deltaP_nobeta_continuum_n1red_freevel_narrow.yaml \
+  --k 4 \
+  --nights 20240528 \
+  --cameras red \
+  --orders 2 \
+  --sample-kp-vsys \
+  --n-walkers 32 \
+  --n-steps 5 \
+  --burn-in 0 \
+  --thin 1 \
+  --n-jobs 1 \
+  --seed 123 \
+  --overwrite \
+  --output retrieval/results/hrccs_emcee_deltaP_freeP_smoke_k4
+```
+
+The run logs and summary JSON include sampled T-P values and derived
+`T_upper`/`logP_lower` values. Prior-edge diagnostics still apply only to
+sampled parameters.
 
 ## Species And Beta
 
