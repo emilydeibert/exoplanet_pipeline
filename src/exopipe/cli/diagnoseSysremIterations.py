@@ -107,6 +107,16 @@ parser.add_argument(
     default=None,
 )
 
+parser.add_argument(
+    "--preferred-injection-suffix",
+    default="scaled_5x",
+    help=(
+        "Preferred injection filename suffix to use before .npz, e.g. "
+        "'scaled_5x' looks for injected_positive_scaled_5x.npz first. "
+        "If not found, falls back to the unscaled injected_positive.npz file."
+    ),
+)
+
 parser.add_argument("--rv-min", type=float, default=None)
 parser.add_argument("--rv-max", type=float, default=None)
 parser.add_argument("--kp-min", type=float, default=None)
@@ -191,6 +201,49 @@ def load_one_map(
     return order_sum, saved_orders[order_positions], RV_file, Kp_file
 
 
+def get_injection_filename(
+    night,
+    camera,
+    model,
+    iters,
+    sign,
+    preferred_suffix="scaled_5x",
+):
+    """
+    Return preferred scaled injection file if it exists; otherwise return
+    the original unscaled injection filename.
+
+    Example preferred:
+      20240702_blue_Fe_15_iters_injected_positive_scaled_5x.npz
+
+    Example fallback:
+      20240702_blue_Fe_15_iters_injected_positive.npz
+    """
+
+    injected_dir = Path(config.path2reduced) / "injected"
+
+    base = f"{night}_{camera}_{model}_{iters}_iters_injected_{sign}"
+
+    if preferred_suffix is not None and str(preferred_suffix).strip() != "":
+        preferred = injected_dir / f"{base}_{preferred_suffix}.npz"
+
+        if preferred.exists():
+            print(f"Using preferred injection file: {preferred}")
+            return preferred
+
+    fallback = injected_dir / f"{base}.npz"
+
+    if fallback.exists():
+        print(f"Using fallback injection file: {fallback}")
+        return fallback
+
+    raise FileNotFoundError(
+        "Could not find preferred or fallback injection file:\n"
+        f"  preferred: {injected_dir / f'{base}_{preferred_suffix}.npz'}\n"
+        f"  fallback : {fallback}"
+    )
+
+
 def load_and_combine_maps(
     model,
     iters,
@@ -217,15 +270,23 @@ def load_and_combine_maps(
                 )
 
             elif kind == "positive":
-                filename = (
-                    f"{config.path2reduced}/injected/"
-                    f"{night}_{camera}_{model}_{iters}_iters_injected_positive.npz"
+                filename = get_injection_filename(
+                    night=night,
+                    camera=camera,
+                    model=model,
+                    iters=iters,
+                    sign="positive",
+                    preferred_suffix=args.preferred_injection_suffix,
                 )
 
             elif kind == "negative":
-                filename = (
-                    f"{config.path2reduced}/injected/"
-                    f"{night}_{camera}_{model}_{iters}_iters_injected_negative.npz"
+                filename = get_injection_filename(
+                    night=night,
+                    camera=camera,
+                    model=model,
+                    iters=iters,
+                    sign="negative",
+                    preferred_suffix=args.preferred_injection_suffix,
                 )
 
             else:
