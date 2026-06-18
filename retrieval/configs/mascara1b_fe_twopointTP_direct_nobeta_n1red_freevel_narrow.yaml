@@ -51,7 +51,7 @@ model:
   representation: xcorr_processed
   line_opacity_mode: lbl
   line_by_line_opacity_sampling: 4
-  wavelength_boundaries_micron: [0.383, 1.0]
+  wavelength_boundaries_micron: [0.3, 1.08]
   wavelength_margin_fraction: 0.01
   xcorr_processed:
     stellar_temperature: 9360.0

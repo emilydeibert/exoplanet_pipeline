@@ -9,8 +9,15 @@ from typing import Any
 
 from retrieval.prt_emission_model import setup_logging
 
-from .ccf_likelihood import evaluate_objective
-from .data_loading import block_summary, load_hrccs_data, load_project_modules, parse_int_list, split_cli_list
+from .ccf_likelihood import OBJECTIVE_CHOICES, evaluate_objective
+from .data_loading import (
+    block_summary,
+    load_hrccs_data,
+    load_project_modules,
+    log_model_data_wavelength_padding,
+    parse_int_list,
+    split_cli_list,
+)
 from .model_builder import build_prt_xcorr_template, load_retrieval_config_and_parameters, parameters_with_updates
 from .sampler_common import beta_configuration, beta_from_state, beta_mode_label, fixed_parameters_from_config, parameter_names
 
@@ -33,7 +40,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", required=True)
     parser.add_argument(
         "--objective",
-        choices=["matched_filter_loglike", "ccf_peak_value"],
+        choices=OBJECTIVE_CHOICES,
         default="matched_filter_loglike",
     )
     return parser.parse_args()
@@ -77,7 +84,7 @@ def inclusive_grid(lo: float, hi: float, step: float) -> Any:
     return np.arange(lo, hi + 0.5 * step, step, dtype=float)
 
 
-def save_grid_plot(path: Path, kp_grid: Any, vsys_grid: Any, loglike_map: Any, best: dict[str, float]) -> bool:
+def save_grid_plot(path: Path, kp_grid: Any, vsys_grid: Any, loglike_map: Any, best: dict[str, float], objective: str) -> bool:
     """Save delta-loglike Kp/Vsys map."""
 
     try:
@@ -95,8 +102,9 @@ def save_grid_plot(path: Path, kp_grid: Any, vsys_grid: Any, loglike_map: Any, b
     ax.scatter([best["Vsys"]], [best["Kp"]], marker="x", color="white", s=80)
     ax.set_xlabel("Vsys [km/s]")
     ax.set_ylabel("Kp [km/s]")
+    ax.set_title(str(objective))
     cbar = fig.colorbar(mesh, ax=ax)
-    cbar.set_label("Delta log likelihood")
+    cbar.set_label("Delta objective")
     fig.tight_layout()
     fig.savefig(path, dpi=250, bbox_inches="tight")
     plt.close(fig)
@@ -122,6 +130,7 @@ def main() -> None:
     names = parameter_names(sample_kp_vsys=True, retrieval_config=retrieval_config)
     beta_config = beta_configuration(names, retrieval_config, args.objective)
     logger.info("Fixed atmospheric/nuisance parameters from %s: %s", args.parameters_json, parameters)
+    logger.info("Objective: %s", args.objective)
     logger.info("beta mode: %s", beta_mode_label(beta_config))
 
     template = build_prt_xcorr_template(retrieval_config, exopipe_config, base_parameters, logger=logger)
@@ -135,6 +144,7 @@ def main() -> None:
         orders=parse_int_list(args.orders),
         logger=logger,
     )
+    wavelength_padding_summary = log_model_data_wavelength_padding(blocks, retrieval_config, logger=logger)
 
     kp_grid = inclusive_grid(args.kp_min, args.kp_max, args.kp_step)
     vsys_grid = inclusive_grid(args.vsys_min, args.vsys_max, args.vsys_step)
@@ -173,7 +183,14 @@ def main() -> None:
         log_likelihood=loglike_map,
         delta_log_likelihood=loglike_map - np.nanmax(loglike_map),
     )
-    plot_saved = save_grid_plot(output_dir / "kp_vsys_likelihood_grid.png", kp_grid, vsys_grid, loglike_map, best)
+    plot_saved = save_grid_plot(
+        output_dir / "kp_vsys_likelihood_grid.png",
+        kp_grid,
+        vsys_grid,
+        loglike_map,
+        best,
+        objective=args.objective,
+    )
 
     summary = {
         "project_path": str(args.project_path),
@@ -187,6 +204,7 @@ def main() -> None:
         "best": best,
         "plot_saved": bool(plot_saved),
         "data": block_summary(blocks),
+        "wavelength_padding": wavelength_padding_summary,
     }
     with (output_dir / "kp_vsys_likelihood_grid_summary.json").open("w", encoding="utf-8") as handle:
         json.dump(summary, handle, indent=2, sort_keys=True)

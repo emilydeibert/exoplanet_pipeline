@@ -505,6 +505,34 @@ Requested pRT continuum contributors: ['H2--H2-NatAbund__BoRi.R831_0.6-250mu', '
 Requested pRT continuum contributors for Radtrans: ['H2--H2-NatAbund__BoRi.R831_0.6-250mu', 'H2--He-NatAbund__BoRi.DeltaWavenumber2_0.5-500mu']
 ```
 
+## Model Wavelength Padding
+
+Keep pRT model-generation wavelength boundaries padded beyond the selected
+data/order wavelengths. These boundaries control the rest-frame pRT template
+coverage only; they do not select data, orders, or science wavelength range.
+Data selection remains controlled by the run's nights, cameras, orders, SYSREM
+iteration, and the existing xcorr order-selection logic.
+
+Tight model boundaries can create velocity-dependent finite-overlap artifacts
+near template edges, especially for `matched_filter_loglike`, because different
+Kp/Vsys points may see different numbers of finite model pixels. For
+MASCARA-1b N1 red directTP tests, changing pRT generation bounds from
+`[0.383, 1.0]` to `[0.3, 1.08]` fixed the old-good-equivalent directTP
+matched-filter grid, recovering the expected region near Kp = 196.5 km/s and
+Vsys = -1.0 km/s.
+
+The directTP/deltaP staged MASCARA-1b configs therefore use:
+
+```yaml
+model:
+  wavelength_boundaries_micron: [0.3, 1.08]
+```
+
+HRCCS scripts now log the selected data wavelength range, configured pRT model
+boundaries, blue/red padding, and an approximate Doppler-padding estimate from
+Kp/Vsys priors plus BERV. Treat warnings about close model boundaries as a
+reason to widen only the model-generation range, not the data selection.
+
 ## Kp/Vsys Diagnostic Grid
 
 When an emcee run lands on velocity-prior edges, map the likelihood surface at
@@ -530,3 +558,112 @@ python -m retrieval.hrccs_retrieval.diagnose_kp_vsys_likelihood_grid \
 
 The diagnostic writes `kp_vsys_likelihood_grid.npz`,
 `kp_vsys_likelihood_grid.png`, and `kp_vsys_likelihood_grid_summary.json`.
+
+## Matched-Filter Component Diagnostics
+
+If `matched_filter_loglike` lands at a velocity-prior corner while
+`ccf_peak_value` still peaks at the Fe detection, decompose the matched-filter
+terms before changing retrieval physics. The component diagnostic compares
+valid overlap, weighted means, dot products, model norms, analytic amplitude,
+and likelihood contributions at selected velocity points.
+
+For the directTP old-good-equivalent Fe test, first write:
+
+```bash
+mkdir -p retrieval/results/hrccs_directTP_oldgood_equiv_mf_debug
+
+cat > retrieval/results/hrccs_directTP_oldgood_equiv_mf_debug/directTP_oldgood_equiv_params.json <<'JSON'
+{
+  "T_lower": 2460.23110505095,
+  "T_upper": 5985.870425768106,
+  "logP_lower": -1.5,
+  "logP_upper": -3.0,
+  "log10_Fe": -2.634774406856159
+}
+JSON
+```
+
+Component diagnostic:
+
+```bash
+python -m retrieval.hrccs_retrieval.diagnose_matched_filter_components \
+  /home/edeibert/projects/def-ldang05/edeibert/mascara1b \
+  --retrieval-config retrieval/configs/mascara1b_fe_twopointTP_direct_nobeta_n1red_freevel_narrow.yaml \
+  --parameters-json retrieval/results/hrccs_directTP_oldgood_equiv_mf_debug/directTP_oldgood_equiv_params.json \
+  --k 4 \
+  --nights 20240528 \
+  --cameras red \
+  --orders 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 \
+  --kp-vsys 196.5 -1.0 ccf_peak \
+  --kp-vsys 185.0 -12.0 corner \
+  --kp-vsys 198.0 0.0 fiducial \
+  --output retrieval/results/hrccs_directTP_oldgood_equiv_mf_debug/components
+```
+
+Zero-mean model matched-filter grid:
+
+```bash
+python -m retrieval.hrccs_retrieval.diagnose_kp_vsys_likelihood_grid \
+  /home/edeibert/projects/def-ldang05/edeibert/mascara1b \
+  --retrieval-config retrieval/configs/mascara1b_fe_twopointTP_direct_nobeta_n1red_freevel_narrow.yaml \
+  --parameters-json retrieval/results/hrccs_directTP_oldgood_equiv_mf_debug/directTP_oldgood_equiv_params.json \
+  --k 4 \
+  --nights 20240528 \
+  --cameras red \
+  --orders 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 \
+  --kp-min 185 \
+  --kp-max 210 \
+  --kp-step 0.5 \
+  --vsys-min -12 \
+  --vsys-max 8 \
+  --vsys-step 0.5 \
+  --objective matched_filter_loglike_zero_mean_model \
+  --output retrieval/results/hrccs_directTP_oldgood_equiv_mf_debug/grid_zero_mean_model
+```
+
+Zero-mean data/model matched-filter grid:
+
+```bash
+python -m retrieval.hrccs_retrieval.diagnose_kp_vsys_likelihood_grid \
+  /home/edeibert/projects/def-ldang05/edeibert/mascara1b \
+  --retrieval-config retrieval/configs/mascara1b_fe_twopointTP_direct_nobeta_n1red_freevel_narrow.yaml \
+  --parameters-json retrieval/results/hrccs_directTP_oldgood_equiv_mf_debug/directTP_oldgood_equiv_params.json \
+  --k 4 \
+  --nights 20240528 \
+  --cameras red \
+  --orders 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 \
+  --kp-min 185 \
+  --kp-max 210 \
+  --kp-step 0.5 \
+  --vsys-min -12 \
+  --vsys-max 8 \
+  --vsys-step 0.5 \
+  --objective matched_filter_loglike_zero_mean_data_model \
+  --output retrieval/results/hrccs_directTP_oldgood_equiv_mf_debug/grid_zero_mean_data_model
+```
+
+Optional normalized weighted-correlation grid:
+
+```bash
+python -m retrieval.hrccs_retrieval.diagnose_kp_vsys_likelihood_grid \
+  /home/edeibert/projects/def-ldang05/edeibert/mascara1b \
+  --retrieval-config retrieval/configs/mascara1b_fe_twopointTP_direct_nobeta_n1red_freevel_narrow.yaml \
+  --parameters-json retrieval/results/hrccs_directTP_oldgood_equiv_mf_debug/directTP_oldgood_equiv_params.json \
+  --k 4 \
+  --nights 20240528 \
+  --cameras red \
+  --orders 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 \
+  --kp-min 185 \
+  --kp-max 210 \
+  --kp-step 0.5 \
+  --vsys-min -12 \
+  --vsys-max 8 \
+  --vsys-step 0.5 \
+  --objective matched_filter_loglike_normalized_ccf \
+  --output retrieval/results/hrccs_directTP_oldgood_equiv_mf_debug/grid_normalized_ccf
+```
+
+The original `matched_filter_loglike` remains the default. The zero-mean
+variants are opt-in and currently do not support beta/noise-scale parameters.
+The normalized CCF objective is a diagnostic weighted-correlation score, not a
+Gaussian log likelihood.

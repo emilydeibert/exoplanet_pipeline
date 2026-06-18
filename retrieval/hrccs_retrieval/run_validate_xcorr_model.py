@@ -15,7 +15,14 @@ from .ccf_likelihood import (
     save_validation_plot,
     write_json,
 )
-from .data_loading import block_summary, load_hrccs_data, load_project_modules, parse_int_list, split_cli_list
+from .data_loading import (
+    block_summary,
+    load_hrccs_data,
+    load_project_modules,
+    log_model_data_wavelength_padding,
+    parse_int_list,
+    split_cli_list,
+)
 from .model_builder import build_prt_xcorr_template, load_retrieval_config_and_parameters
 
 
@@ -63,6 +70,7 @@ def main() -> None:
         orders=orders,
         logger=logger,
     )
+    wavelength_padding_summary = log_model_data_wavelength_padding(blocks, retrieval_config, logger=logger)
 
     maps = compute_xcorr_detection_map(
         blocks=blocks,
@@ -107,6 +115,7 @@ def main() -> None:
         "nights": [block.night for block in blocks],
         "cameras": [block.camera for block in blocks],
         "data": block_summary(blocks),
+        "wavelength_padding": wavelength_padding_summary,
         "prt_parameters": parameters,
         "peak": peak,
         "noise": float(noise),

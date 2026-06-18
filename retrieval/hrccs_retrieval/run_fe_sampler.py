@@ -15,7 +15,15 @@ from retrieval.prt_emission_model import (
     temperature_pressure_parameter_report,
 )
 
-from .data_loading import block_summary, load_hrccs_data, load_project_modules, parse_int_list, split_cli_list
+from .ccf_likelihood import OBJECTIVE_CHOICES
+from .data_loading import (
+    block_summary,
+    load_hrccs_data,
+    load_project_modules,
+    log_model_data_wavelength_padding,
+    parse_int_list,
+    split_cli_list,
+)
 from .model_builder import build_prt_xcorr_template, load_retrieval_config_and_parameters
 from .sampler_common import (
     beta_configuration,
@@ -59,7 +67,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--objective",
-        choices=["matched_filter_loglike", "ccf_peak_value"],
+        choices=OBJECTIVE_CHOICES,
         default="matched_filter_loglike",
     )
     return parser.parse_args()
@@ -132,6 +140,7 @@ def main() -> None:
         orders=parse_int_list(args.orders),
         logger=logger,
     )
+    wavelength_padding_summary = log_model_data_wavelength_padding(blocks, retrieval_config, logger=logger)
 
     worker_init_log_path = output_dir / "fe_hrccs_worker_initialization.jsonl"
     worker_init_log_path.write_text("", encoding="utf-8")
@@ -257,6 +266,7 @@ def main() -> None:
             "calls_per_second": calls_per_second,
             "average_seconds_per_call": average_seconds_per_call,
             "data": block_summary(blocks),
+            "wavelength_padding": wavelength_padding_summary,
         }
         with (output_dir / "fe_hrccs_likelihood_benchmark_summary.json").open("w", encoding="utf-8") as handle:
             json.dump(summary, handle, indent=2, sort_keys=True)
@@ -378,6 +388,7 @@ def main() -> None:
         "calls_per_second": calls_per_second,
         "average_seconds_per_call": average_seconds_per_call,
         "data": block_summary(blocks),
+        "wavelength_padding": wavelength_padding_summary,
     }
     with (output_dir / "fe_hrccs_dynesty_summary.json").open("w", encoding="utf-8") as handle:
         json.dump(summary, handle, indent=2, sort_keys=True)

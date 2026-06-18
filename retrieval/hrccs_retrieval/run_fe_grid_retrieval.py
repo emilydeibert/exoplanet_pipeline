@@ -14,7 +14,14 @@ from typing import Any
 from retrieval.prt_emission_model import setup_logging
 
 from .ccf_likelihood import evaluate_objective, write_json
-from .data_loading import block_summary, load_hrccs_data, load_project_modules, parse_int_list, split_cli_list
+from .data_loading import (
+    block_summary,
+    load_hrccs_data,
+    load_project_modules,
+    log_model_data_wavelength_padding,
+    parse_int_list,
+    split_cli_list,
+)
 from .model_builder import build_prt_xcorr_template, load_retrieval_config_and_parameters, parameters_with_updates
 
 
@@ -160,6 +167,7 @@ def main() -> None:
         orders=parse_int_list(args.orders),
         logger=logger,
     )
+    wavelength_padding_summary = log_model_data_wavelength_padding(blocks, retrieval_config, logger=logger)
     tasks = build_tasks(args, initial)
     logger.info("Running %d HRCCS grid evaluations with n_jobs=%d", len(tasks), int(args.n_jobs))
 
@@ -209,6 +217,7 @@ def main() -> None:
             "n_evaluations": len(rows),
             "best": best,
             "data": block_summary(blocks),
+            "wavelength_padding": wavelength_padding_summary,
         },
     )
     logger.info("Best grid row: %s", best)

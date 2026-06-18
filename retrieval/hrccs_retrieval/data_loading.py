@@ -19,7 +19,9 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional, Sequence
+from typing import Any, Mapping, Optional, Sequence
+
+from retrieval.prt_emission_model import C_KM_S
 
 
 @dataclass
@@ -280,6 +282,160 @@ def load_hrccs_data(
                 )
             )
     return blocks
+
+
+def _infer_wave_unit_and_convert_to_micron(wavelengths: Any) -> tuple[Any, str]:
+    """Infer HRCCS wavelength units and return microns for logging.
+
+    The existing xcorr path uses nanometers for GHOST order wavelengths, while
+    retrieval YAML model boundaries are in microns.  This helper keeps the
+    logging explicit without changing any data arrays.
+    """
+
+    np = require_numpy()
+    wave = np.asarray(wavelengths, dtype=float)
+    finite = wave[np.isfinite(wave)]
+    if finite.size == 0:
+        raise ValueError("No finite wavelengths available for padding diagnostics.")
+    median = float(np.nanmedian(finite))
+    if median > 10.0:
+        return wave / 1000.0, "nm"
+    return wave, "micron"
+
+
+def _max_prior_abs(priors: Mapping[str, Any], name: str) -> Optional[float]:
+    values = priors.get(name)
+    if values is None:
+        return None
+    try:
+        lo, hi = values
+        return max(abs(float(lo)), abs(float(hi)))
+    except Exception:
+        return None
+
+
+def log_model_data_wavelength_padding(
+    blocks: Sequence[ObservationBlock],
+    retrieval_config: Mapping[str, Any],
+    logger: Optional[logging.Logger] = None,
+) -> dict[str, Any]:
+    """Log pRT model-boundary padding relative to selected HRCCS data.
+
+    This diagnostic is intentionally read-only: it does not affect data/order
+    selection or pRT wavelength boundaries.  It warns when model-generation
+    boundaries are close enough to the selected data wavelengths that Doppler
+    shifts may create velocity-dependent finite-overlap artifacts.
+    """
+
+    np = require_numpy()
+    if logger is None:
+        logger = logging.getLogger("retrieval")
+
+    if not blocks:
+        raise ValueError("No HRCCS data blocks supplied for wavelength padding diagnostics.")
+
+    all_wave = np.concatenate([np.asarray(block.wave, dtype=float).reshape(-1) for block in blocks])
+    all_wave_micron, inferred_unit = _infer_wave_unit_and_convert_to_micron(all_wave)
+    finite_wave = all_wave_micron[np.isfinite(all_wave_micron)]
+    if finite_wave.size == 0:
+        raise ValueError("Selected HRCCS data wavelengths have no finite values.")
+
+    data_min = float(np.nanmin(finite_wave))
+    data_max = float(np.nanmax(finite_wave))
+    model_bounds = retrieval_config.get("model", {}).get("wavelength_boundaries_micron", None)
+    if model_bounds is None:
+        logger.info(
+            "No model.wavelength_boundaries_micron configured; cannot log pRT/data wavelength padding."
+        )
+        return {
+            "data_wavelength_min_micron": data_min,
+            "data_wavelength_max_micron": data_max,
+            "data_wavelength_unit_inferred": inferred_unit,
+            "model_wavelength_boundaries_micron": None,
+        }
+
+    model_min = float(model_bounds[0])
+    model_max = float(model_bounds[1])
+    blue_padding = data_min - model_min
+    red_padding = model_max - data_max
+
+    max_abs_berv = 0.0
+    for block in blocks:
+        berv = np.asarray(block.berv, dtype=float)
+        finite_berv = berv[np.isfinite(berv)]
+        if finite_berv.size:
+            max_abs_berv = max(max_abs_berv, float(np.nanmax(np.abs(finite_berv))))
+
+    priors = retrieval_config.get("priors", {})
+    max_abs_kp = _max_prior_abs(priors, "Kp")
+    max_abs_vsys = _max_prior_abs(priors, "Vsys")
+    max_abs_velocity = None
+    required_padding_blue = None
+    required_padding_red = None
+    if max_abs_kp is not None or max_abs_vsys is not None:
+        max_abs_velocity = float(max_abs_kp or 0.0) + float(max_abs_vsys or 0.0) + max_abs_berv
+        required_padding_blue = data_min * max_abs_velocity / C_KM_S
+        required_padding_red = data_max * max_abs_velocity / C_KM_S
+
+    summary = {
+        "data_wavelength_min_micron": data_min,
+        "data_wavelength_max_micron": data_max,
+        "data_wavelength_unit_inferred": inferred_unit,
+        "model_wavelength_boundaries_micron": [model_min, model_max],
+        "blue_padding_micron": float(blue_padding),
+        "red_padding_micron": float(red_padding),
+        "blue_padding_nm": float(blue_padding * 1000.0),
+        "red_padding_nm": float(red_padding * 1000.0),
+        "max_abs_berv_kms": float(max_abs_berv),
+        "max_abs_velocity_kms": max_abs_velocity,
+        "required_blue_padding_micron_approx": required_padding_blue,
+        "required_red_padding_micron_approx": required_padding_red,
+    }
+
+    logger.info(
+        "Selected HRCCS data wavelength range: %.6f-%.6f micron "
+        "(input unit inferred as %s)",
+        data_min,
+        data_max,
+        inferred_unit,
+    )
+    logger.info(
+        "pRT model wavelength_boundaries_micron: %.6f-%.6f",
+        model_min,
+        model_max,
+    )
+    logger.info(
+        "pRT/data wavelength padding: blueward %.6f micron (%.3f nm), "
+        "redward %.6f micron (%.3f nm)",
+        blue_padding,
+        blue_padding * 1000.0,
+        red_padding,
+        red_padding * 1000.0,
+    )
+    if max_abs_velocity is not None:
+        logger.info(
+            "Approx max |velocity| from Kp/Vsys priors plus BERV: %.3f km/s; "
+            "Doppler padding estimate blue/red: %.6f/%.6f micron",
+            max_abs_velocity,
+            required_padding_blue,
+            required_padding_red,
+        )
+
+    warn = blue_padding <= 0.0 or red_padding <= 0.0
+    if required_padding_blue is not None and required_padding_red is not None:
+        warn = warn or blue_padding < required_padding_blue or red_padding < required_padding_red
+    else:
+        warn = warn or min(blue_padding, red_padding) < 0.005
+
+    if warn:
+        logger.warning(
+            "pRT model wavelength boundaries are close to selected data wavelengths; "
+            "velocity-dependent edge overlap may bias matched_filter_loglike. "
+            "Consider padded model boundaries. Data/order selection is separate "
+            "from pRT model-generation boundaries."
+        )
+
+    return summary
 
 
 def block_summary(blocks: Sequence[ObservationBlock]) -> dict[str, Any]:

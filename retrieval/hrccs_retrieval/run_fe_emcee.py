@@ -20,7 +20,15 @@ from retrieval.prt_emission_model import (
     temperature_pressure_parameter_report,
 )
 
-from .data_loading import block_summary, load_hrccs_data, load_project_modules, parse_int_list, split_cli_list
+from .ccf_likelihood import OBJECTIVE_CHOICES
+from .data_loading import (
+    block_summary,
+    load_hrccs_data,
+    load_project_modules,
+    log_model_data_wavelength_padding,
+    parse_int_list,
+    split_cli_list,
+)
 from .model_builder import build_prt_xcorr_template, load_retrieval_config_and_parameters
 from .sampler_common import (
     beta_configuration,
@@ -52,7 +60,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sample-kp-vsys", action="store_true", help="Also sample Kp and Vsys. Default keeps them fixed.")
     parser.add_argument(
         "--objective",
-        choices=["matched_filter_loglike", "ccf_peak_value"],
+        choices=OBJECTIVE_CHOICES,
         default="matched_filter_loglike",
     )
 
@@ -374,6 +382,7 @@ def main() -> None:
         orders=parse_int_list(args.orders),
         logger=logger,
     )
+    wavelength_padding_summary = log_model_data_wavelength_padding(blocks, retrieval_config, logger=logger)
 
     worker_init_log_path = output_dir / "fe_hrccs_emcee_worker_initialization.jsonl"
     worker_init_log_path.write_text("", encoding="utf-8")
@@ -639,6 +648,7 @@ def main() -> None:
         "worker_initialization_log": str(worker_init_log_path),
         "worker_initialization": read_worker_init_records(worker_init_log_path),
         "data": block_summary(blocks),
+        "wavelength_padding": wavelength_padding_summary,
         "output_files": output_files,
     }
     write_json(summary_path, summary)
