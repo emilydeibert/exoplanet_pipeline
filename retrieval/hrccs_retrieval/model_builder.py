@@ -71,6 +71,7 @@ def generate_xcorr_processed_model_array(
     wavelength_boundaries_micron: Optional[list[float]] = None,
     atmosphere: Optional[Any] = None,
     logger: Optional[logging.Logger] = None,
+    include_raw_arrays: bool = False,
 ) -> tuple[Any, dict[str, Any]]:
     """Generate pRT Fe emission and convert it to the working xcorr template array.
 
@@ -103,6 +104,11 @@ def generate_xcorr_processed_model_array(
         "parameters": {key: float(value) for key, value in model_parameters.items()},
         "seconds": float(time.perf_counter() - start),
     }
+    if include_raw_arrays:
+        metadata["raw_prt_arrays"] = {
+            "wavelengths_cm": wavelengths_cm,
+            "flux": raw_flux,
+        }
     if logger is not None:
         logger.info(
             "Generated xcorr_processed pRT model with %d pixels in %.2fs",
@@ -156,6 +162,7 @@ def build_prt_xcorr_template(
     parameters: Mapping[str, float],
     atmosphere: Optional[Any] = None,
     logger: Optional[logging.Logger] = None,
+    include_raw_arrays: bool = False,
 ) -> dict[str, Any]:
     """Generate pRT, process it, convolve it, and return an interpolator."""
 
@@ -164,6 +171,7 @@ def build_prt_xcorr_template(
         parameters=parameters,
         atmosphere=atmosphere,
         logger=logger,
+        include_raw_arrays=include_raw_arrays,
     )
     template = build_template_interpolator(model_array, ghost_res=exopipe_config.ghost_res)
     template["model_array"] = model_array
