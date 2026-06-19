@@ -1,0 +1,114 @@
+# Joint-red HRCCS Fe config: delta-pressure T-P, CIA continuum, per-night residual velocities.
+
+target:
+  name: MASCARA-1b
+
+prt:
+  input_data_path: /home/edeibert/projects/def-ldang05/edeibert/petitRADTRANS/input_data
+  input_data_env_var: PETITRADTRANS_INPUT_DATA
+  require_input_data_path: true
+  # Keep this true for production to prevent pRT Keeper/Selenium auto-downloads.
+  require_continuum_opacity_files: true
+
+planet:
+  planet_radius_rj: 1.5
+  star_radius_rsun: 2.1
+  reference_gravity_cgs: 4.1e3
+  reference_pressure_bar: 1.0e-2
+
+pressure_grid:
+  min_bar: 1.0e-8
+  max_bar: 1.0
+  n_layers: 100
+
+tp_profile:
+  type: free_two_point_inversion_delta
+  min_delta_T: 0.0
+  min_delta_logP: 0.25
+  T_upper_bounds: [0.0, 7000.0]
+
+species:
+  active_species: [Fe]
+  Fe:
+    prt_name: Fe
+    abundance_parameter: log10_Fe
+  filling_gas:
+    H2_weight: 0.74
+    He_weight: 0.24
+  mean_molar_mass: 2.33
+
+continuum_contributors:
+  - yaml_name: H2-H2
+    prt_name: H2--H2-NatAbund__BoRi.R831_0.6-250mu
+    file: /home/edeibert/projects/def-ldang05/edeibert/petitRADTRANS/input_data/opacities/continuum/collision_induced_absorptions/H2--H2/H2--H2-NatAbund/H2--H2-NatAbund__BoRi.R831_0.6-250mu.ciatable.petitRADTRANS.h5
+  - yaml_name: H2-He
+    prt_name: H2--He-NatAbund__BoRi.DeltaWavenumber2_0.5-500mu
+    file: /home/edeibert/projects/def-ldang05/edeibert/petitRADTRANS/input_data/opacities/continuum/collision_induced_absorptions/H2--He/H2--He-NatAbund/H2--He-NatAbund__BoRi.DeltaWavenumber2_0.5-500mu.ciatable.petitRADTRANS.h5
+
+continuum:
+  rayleigh_species: []
+  hminus:
+    enabled: false
+    fixed_mass_fractions:
+      H-: 1.0e-10
+      H: 1.0e-4
+      e-: 1.0e-4
+
+model:
+  mode: emission
+  representation: xcorr_processed
+  line_opacity_mode: lbl
+  line_by_line_opacity_sampling: 4
+  wavelength_boundaries_micron: [0.3, 1.08]
+  wavelength_margin_fraction: 0.01
+  xcorr_processed:
+    stellar_temperature: 9360.0
+    stellar_radius_rsun: 1.67
+    vacuum_to_air: auto
+    remove_envelope: true
+    envelope_pixels: 400
+    envelope_poly_order: 4
+
+velocity:
+  mode: per_night_offsets
+  per_night_offsets:
+    "20240528": deltaV_N1
+    "20240702": deltaV_N2
+    "20241002": deltaV_N3
+
+priors:
+  Kp: [185.0, 210.0]
+  deltaV_N1: [-12.0, 8.0]
+  deltaV_N2: [-12.0, 8.0]
+  deltaV_N3: [-12.0, 8.0]
+  T_lower: [1200.0, 3800.0]
+  delta_T_inv: [200.0, 4500.0]
+  logP_upper: [-6.5, -3.0]
+  delta_logP: [1.0, 6.5]
+  log10_Fe: [-7.5, -2.0]
+  log_model_scale: [-4.0, 4.0]
+  allow_negative_delta_T_inv_validation: false
+
+initial_parameters:
+  Kp: 198.0
+  deltaV_N1: -0.5
+  deltaV_N2: -0.5
+  deltaV_N3: -0.5
+  T_lower: 2200.0
+  delta_T_inv: 2500.0
+  logP_upper: -4.0
+  delta_logP: 3.0
+  log10_Fe: -4.5
+  log_model_scale: 0.0
+
+sampler:
+  sampled_parameters:
+    - Kp
+    - deltaV_N1
+    - deltaV_N2
+    - deltaV_N3
+    - T_lower
+    - delta_T_inv
+    - logP_upper
+    - delta_logP
+    - log10_Fe

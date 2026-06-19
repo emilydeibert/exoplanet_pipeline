@@ -116,6 +116,64 @@ def parse_int_list(value: Optional[Any]) -> Optional[list[int]]:
     return [int(piece) for piece in pieces]
 
 
+def parse_k_per_night(value: Optional[Any]) -> dict[str, int]:
+    """Parse ``--k-per-night`` entries of the form ``NIGHT:K``.
+
+    The map is intentionally keyed by night only for now.  Keeping this as a
+    helper makes it straightforward to extend to night+camera keys later
+    without changing the sampler entry points again.
+    """
+
+    pieces = split_cli_list(value)
+    if pieces is None:
+        return {}
+
+    parsed: dict[str, int] = {}
+    for piece in pieces:
+        if ":" not in piece:
+            raise ValueError(
+                "--k-per-night entries must have the form NIGHT:K, "
+                f"for example 20240528:4; got {piece!r}."
+            )
+        night, raw_k = piece.split(":", 1)
+        night = night.strip()
+        raw_k = raw_k.strip()
+        if not night:
+            raise ValueError(f"--k-per-night entry has an empty night: {piece!r}.")
+        try:
+            k = int(raw_k)
+        except ValueError as exc:
+            raise ValueError(f"SYSREM k for night {night!r} must be an integer; got {raw_k!r}.") from exc
+        if k < 1:
+            raise ValueError(f"SYSREM k for night {night!r} must be >= 1; got {k}.")
+        if night in parsed and parsed[night] != k:
+            raise ValueError(f"Conflicting SYSREM k values for night {night!r}: {parsed[night]} and {k}.")
+        parsed[night] = k
+    return parsed
+
+
+def resolve_sysrem_iteration_for_night(
+    night: str,
+    global_k: Optional[int],
+    k_per_night: Optional[Mapping[str, int]] = None,
+) -> int:
+    """Return the SYSREM iteration for one selected night."""
+
+    night_key = str(night)
+    night_map = {str(key): int(value) for key, value in dict(k_per_night or {}).items()}
+    if night_key in night_map:
+        return int(night_map[night_key])
+    if global_k is not None:
+        k = int(global_k)
+        if k < 1:
+            raise ValueError(f"--k must be >= 1 when supplied; got {k}.")
+        return k
+    raise ValueError(
+        f"No SYSREM iteration was provided for selected night {night_key!r}. "
+        "Use --k for a global fallback or --k-per-night NIGHT:K."
+    )
+
+
 def get_nights_cameras(config: Any, nights: Optional[Sequence[str]], cameras: Optional[Sequence[str]]) -> tuple[list[str], list[str]]:
     """Resolve night/camera selections against the project config."""
 
@@ -254,7 +312,8 @@ def load_one_night_camera(
 def load_hrccs_data(
     config: Any,
     params: Any,
-    k: int,
+    k: Optional[int],
+    k_per_night: Optional[Mapping[str, int]] = None,
     nights: Optional[Sequence[str]] = None,
     cameras: Optional[Sequence[str]] = None,
     model_array: Optional[Any] = None,
@@ -265,8 +324,17 @@ def load_hrccs_data(
     """Load all requested night/camera blocks once for repeated model evaluation."""
 
     selected_nights, selected_cameras = get_nights_cameras(config, nights, cameras)
+    if logger is not None:
+        logger.info("Selected nights: %s", selected_nights)
+        logger.info("Selected cameras: %s", selected_cameras)
+        logger.info(
+            "SYSREM selection: global k=%s, k_per_night=%s",
+            None if k is None else int(k),
+            {str(key): int(value) for key, value in dict(k_per_night or {}).items()},
+        )
     blocks: list[ObservationBlock] = []
     for night in selected_nights:
+        night_k = resolve_sysrem_iteration_for_night(str(night), k, k_per_night)
         for camera in selected_cameras:
             blocks.append(
                 load_one_night_camera(
@@ -274,7 +342,7 @@ def load_hrccs_data(
                     params=params,
                     night=str(night),
                     camera=str(camera),
-                    k=int(k),
+                    k=int(night_k),
                     model_array=model_array,
                     orders=orders,
                     order_threshold=order_threshold,
@@ -282,6 +350,32 @@ def load_hrccs_data(
                 )
             )
     return blocks
+
+
+def sysrem_iterations_by_night(blocks: Sequence[ObservationBlock]) -> dict[str, int]:
+    """Return the selected SYSREM iteration per night and reject mixed cameras."""
+
+    by_night: dict[str, int] = {}
+    for block in blocks:
+        night = str(block.night)
+        k = int(block.sysrem_iteration)
+        if night in by_night and by_night[night] != k:
+            raise ValueError(
+                "Mixed SYSREM iterations for the same night are not supported yet: "
+                f"night={night!r}, values={by_night[night]} and {k}. "
+                "The current --k-per-night map is keyed by night only."
+            )
+        by_night[night] = k
+    return by_night
+
+
+def scalar_sysrem_iteration_if_uniform(blocks: Sequence[ObservationBlock]) -> Optional[int]:
+    """Return the single k value only when every block used the same SYSREM k."""
+
+    values = {int(block.sysrem_iteration) for block in blocks}
+    if len(values) == 1:
+        return int(next(iter(values)))
+    return None
 
 
 def _infer_wave_unit_and_convert_to_micron(wavelengths: Any) -> tuple[Any, str]:
@@ -369,6 +463,16 @@ def log_model_data_wavelength_padding(
     priors = retrieval_config.get("priors", {})
     max_abs_kp = _max_prior_abs(priors, "Kp")
     max_abs_vsys = _max_prior_abs(priors, "Vsys")
+    velocity_cfg = retrieval_config.get("velocity", {})
+    if isinstance(velocity_cfg, Mapping) and str(velocity_cfg.get("mode", "")) == "per_night_offsets":
+        mapping = velocity_cfg.get("per_night_offsets", {})
+        if isinstance(mapping, Mapping):
+            per_night_maxima = [
+                value
+                for value in (_max_prior_abs(priors, str(parameter_name)) for parameter_name in mapping.values())
+                if value is not None
+            ]
+            max_abs_vsys = max(per_night_maxima) if per_night_maxima else None
     max_abs_velocity = None
     required_padding_blue = None
     required_padding_red = None
@@ -414,7 +518,7 @@ def log_model_data_wavelength_padding(
     )
     if max_abs_velocity is not None:
         logger.info(
-            "Approx max |velocity| from Kp/Vsys priors plus BERV: %.3f km/s; "
+            "Approx max |velocity| from Kp/residual-velocity priors plus BERV: %.3f km/s; "
             "Doppler padding estimate blue/red: %.6f/%.6f micron",
             max_abs_velocity,
             required_padding_blue,
@@ -459,6 +563,7 @@ def block_summary(blocks: Sequence[ObservationBlock]) -> dict[str, Any]:
                 "n_exposures": int(block.data_rest.shape[1]),
                 "n_pixels": int(block.data_rest.shape[2]),
                 "finite_fraction": float(np.sum(valid) / valid.size),
+                "sysrem_iteration": int(block.sysrem_iteration),
             }
         )
 

@@ -1813,7 +1813,19 @@ def parameters_from_config(config: Mapping[str, Any]) -> dict[str, float]:
     """Return fixed initial parameters for the smoke test/grid model."""
 
     params = dict(config.get("initial_parameters", {}))
-    required = ["Kp", "Vsys", "log_model_scale"]
+    velocity_cfg = config.get("velocity", {})
+    velocity_mode = str(velocity_cfg.get("mode", "shared_vsys")) if isinstance(velocity_cfg, Mapping) else "shared_vsys"
+    required = ["Kp", "log_model_scale"]
+    if velocity_mode == "per_night_offsets":
+        mapping = velocity_cfg.get("per_night_offsets", {}) if isinstance(velocity_cfg, Mapping) else {}
+        if not isinstance(mapping, Mapping) or not mapping:
+            raise ValueError(
+                "velocity.mode=per_night_offsets requires velocity.per_night_offsets "
+                "in the retrieval config."
+            )
+        required.extend(str(parameter_name) for parameter_name in mapping.values())
+    else:
+        required.append("Vsys")
     profile_type = temperature_profile_type(config)
     if profile_type in {"fixed_two_point_inversion", "two_point_inversion", "free_two_point_inversion"}:
         required.extend(["T_deep", "delta_T_inv"])

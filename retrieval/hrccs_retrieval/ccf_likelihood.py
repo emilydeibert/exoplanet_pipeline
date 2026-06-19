@@ -6,7 +6,7 @@ import json
 import logging
 import time
 from pathlib import Path
-from typing import Any, Optional, Sequence
+from typing import Any, Mapping, Optional, Sequence
 
 from retrieval.prt_emission_model import C_KM_S
 
@@ -158,17 +158,37 @@ def _standardized_model_at_velocity(order_wave: Any, F_model: Any, velocity_kms:
     return model
 
 
+def _velocity_offset_for_block(
+    block: ObservationBlock,
+    Vsys: float,
+    velocity_offsets_by_night: Optional[Mapping[str, float]] = None,
+) -> float:
+    """Return the residual velocity offset for one data block."""
+
+    if velocity_offsets_by_night is None:
+        return float(Vsys)
+    night = str(block.night)
+    if night not in velocity_offsets_by_night:
+        raise ValueError(
+            f"No per-night velocity offset was supplied for night {night!r}. "
+            "Check velocity.per_night_offsets in the retrieval YAML."
+        )
+    return float(velocity_offsets_by_night[night])
+
+
 def matched_filter_terms(
     blocks: Sequence[ObservationBlock],
     F_model: Any,
     Kp: float,
     Vsys: float,
+    velocity_offsets_by_night: Optional[Mapping[str, float]] = None,
 ) -> dict[str, Any]:
     """Compute weighted data-model terms directly along one planet trail.
 
     The model velocity sampled for each exposure is
-    ``Vsys + Kp * sin(2*pi*phase)``, matching the trail stacked by
-    ``finalCorr_stack``.  The objective is a Gaussian matched-filter
+    ``Vsys + Kp * sin(2*pi*phase)`` in shared-velocity mode, or
+    ``deltaV_night + Kp * sin(2*pi*phase)`` in per-night-offset mode,
+    matching the trail stacked by ``finalCorr_stack``.  The objective is a Gaussian matched-filter
     likelihood with an analytic best-fit amplitude:
 
     ``log L = -0.5 * (D - C^2/M)``
@@ -187,7 +207,8 @@ def matched_filter_terms(
     n_exposure_terms = 0
 
     for block in blocks:
-        velocities = float(Vsys) + float(Kp) * np.sin(2.0 * np.pi * block.phase)
+        velocity_offset = _velocity_offset_for_block(block, Vsys, velocity_offsets_by_night)
+        velocities = velocity_offset + float(Kp) * np.sin(2.0 * np.pi * block.phase)
 
         for local_idx, _original_order in enumerate(block.orders):
             order_wave = block.wave[local_idx]
@@ -411,6 +432,7 @@ def _exact_overlap_matched_filter_components(
     center_model: bool,
     min_valid_pixels: int = 10,
     include_per_order: bool = False,
+    velocity_offsets_by_night: Optional[Mapping[str, float]] = None,
 ) -> dict[str, Any]:
     """Compute matched-filter terms with optional exact-overlap centering.
 
@@ -425,7 +447,8 @@ def _exact_overlap_matched_filter_components(
     per_order_acc: dict[str, dict[str, Any]] = {}
 
     for block in blocks:
-        velocities = float(Vsys) + float(Kp) * np.sin(2.0 * np.pi * block.phase)
+        velocity_offset = _velocity_offset_for_block(block, Vsys, velocity_offsets_by_night)
+        velocities = velocity_offset + float(Kp) * np.sin(2.0 * np.pi * block.phase)
 
         for local_idx, original_order in enumerate(block.orders):
             order_label = f"{block.night}_{block.camera}_order{int(original_order)}"
@@ -497,6 +520,7 @@ def baseline_safe_matched_filter_terms(
     Vsys: float,
     center_model: bool = True,
     center_data: bool = True,
+    velocity_offsets_by_night: Optional[Mapping[str, float]] = None,
 ) -> dict[str, Any]:
     """Return global matched-filter terms with exact-overlap mean subtraction."""
 
@@ -508,6 +532,7 @@ def baseline_safe_matched_filter_terms(
         center_data=center_data,
         center_model=center_model,
         include_per_order=False,
+        velocity_offsets_by_night=velocity_offsets_by_night,
     )["global"]
 
 
@@ -517,6 +542,7 @@ def matched_filter_component_diagnostics(
     Kp: float,
     Vsys: float,
     include_per_order: bool = True,
+    velocity_offsets_by_night: Optional[Mapping[str, float]] = None,
 ) -> dict[str, Any]:
     """Return current and exact-centering matched-filter diagnostics."""
 
@@ -534,6 +560,7 @@ def matched_filter_component_diagnostics(
             Kp=Kp,
             Vsys=Vsys,
             include_per_order=include_per_order,
+            velocity_offsets_by_night=velocity_offsets_by_night,
             **settings,
         )
     return diagnostics
@@ -546,12 +573,19 @@ def evaluate_objective(
     Vsys: float,
     objective: str = "matched_filter_loglike",
     beta: Optional[float] = None,
+    velocity_offsets_by_night: Optional[Mapping[str, float]] = None,
 ) -> dict[str, Any]:
     """Evaluate the configured HRCCS objective at one parameter point."""
 
     objective = str(objective)
     if objective == MATCHED_FILTER_LOGLIKE:
-        terms = matched_filter_terms(blocks, F_model, Kp=Kp, Vsys=Vsys)
+        terms = matched_filter_terms(
+            blocks,
+            F_model,
+            Kp=Kp,
+            Vsys=Vsys,
+            velocity_offsets_by_night=velocity_offsets_by_night,
+        )
         if beta is None:
             value = terms["log_likelihood"]
         else:
@@ -579,6 +613,7 @@ def evaluate_objective(
             Vsys=Vsys,
             center_data=True,
             center_model=True,
+            velocity_offsets_by_night=velocity_offsets_by_night,
         )
         value = terms["log_likelihood"]
     elif objective == MATCHED_FILTER_ZERO_MEAN_DATA_MODEL:
@@ -595,6 +630,7 @@ def evaluate_objective(
             Vsys=Vsys,
             center_data=True,
             center_model=True,
+            velocity_offsets_by_night=velocity_offsets_by_night,
         )
         value = terms["log_likelihood"]
     elif objective == MATCHED_FILTER_NORMALIZED_CCF:
@@ -611,12 +647,19 @@ def evaluate_objective(
             Vsys=Vsys,
             center_data=True,
             center_model=True,
+            velocity_offsets_by_night=velocity_offsets_by_night,
         )
         # This is a debug objective, not a Gaussian log likelihood.  Keep the
         # historical HRCCS sign convention so a positive signal is maximized.
         value = terms["ccf_peak_value"]
     elif objective == CCF_PEAK_VALUE:
-        terms = matched_filter_terms(blocks, F_model, Kp=Kp, Vsys=Vsys)
+        terms = matched_filter_terms(
+            blocks,
+            F_model,
+            Kp=Kp,
+            Vsys=Vsys,
+            velocity_offsets_by_night=velocity_offsets_by_night,
+        )
         if beta is not None:
             raise NotImplementedError(
                 "beta/log_beta is only implemented for matched_filter_loglike. "
@@ -634,6 +677,10 @@ def evaluate_objective(
     out["objective_value"] = float(value)
     out["Kp"] = float(Kp)
     out["Vsys"] = float(Vsys)
+    if velocity_offsets_by_night is not None:
+        out["velocity_offsets_by_night"] = {
+            str(key): float(value) for key, value in velocity_offsets_by_night.items()
+        }
     if beta is not None:
         out["beta"] = float(beta)
     return out

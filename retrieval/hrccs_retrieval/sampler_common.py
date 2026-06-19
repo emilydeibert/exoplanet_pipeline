@@ -27,6 +27,7 @@ from .model_builder import build_prt_xcorr_template, parameters_with_updates
 
 _SAMPLER_STATE: dict[str, Any] = {}
 BETA_PARAMETER_NAMES = {"log_beta", "ln_beta"}
+PER_NIGHT_OFFSETS_MODE = "per_night_offsets"
 
 
 def init_sampler_worker(state: dict[str, Any]) -> None:
@@ -118,7 +119,7 @@ def parameters_from_theta(theta: Any, state: Mapping[str, Any]) -> dict[str, flo
     updates = {name: float(value) for name, value in zip(state["names"], theta)}
     parameters = parameters_with_updates(state["initial"], updates)
     parameters.update({key: float(value) for key, value in state.get("fixed_parameters", {}).items()})
-    if not state["sample_kp_vsys"]:
+    if not state["sample_kp_vsys"] and not uses_per_night_velocity_offsets(state["retrieval_config"]):
         parameters["Kp"] = float(state["fixed_kp"])
         parameters["Vsys"] = float(state["fixed_vsys"])
     return parameters
@@ -265,6 +266,104 @@ def validate_beta_configuration(names: Sequence[str], objective: str, retrieval_
     beta_configuration(names, retrieval_config or {}, objective)
 
 
+def velocity_mode(retrieval_config: Mapping[str, Any] | None) -> str:
+    """Return the configured HRCCS residual-velocity mode."""
+
+    if retrieval_config is None:
+        return "shared_vsys"
+    velocity_cfg = retrieval_config.get("velocity", {})
+    if velocity_cfg is None:
+        return "shared_vsys"
+    if not isinstance(velocity_cfg, Mapping):
+        raise ValueError("velocity must be a YAML mapping when supplied.")
+    return str(velocity_cfg.get("mode", "shared_vsys"))
+
+
+def uses_per_night_velocity_offsets(retrieval_config: Mapping[str, Any] | None) -> bool:
+    """Return true when the retrieval samples independent night offsets."""
+
+    return velocity_mode(retrieval_config) == PER_NIGHT_OFFSETS_MODE
+
+
+def per_night_velocity_parameter_mapping(retrieval_config: Mapping[str, Any]) -> dict[str, str]:
+    """Return the YAML night -> sampled-parameter velocity mapping."""
+
+    if not uses_per_night_velocity_offsets(retrieval_config):
+        return {}
+    velocity_cfg = retrieval_config.get("velocity", {})
+    mapping = velocity_cfg.get("per_night_offsets", {})
+    if not isinstance(mapping, Mapping) or not mapping:
+        raise ValueError(
+            "velocity.mode=per_night_offsets requires a non-empty "
+            "velocity.per_night_offsets mapping."
+        )
+    parsed = {str(night): str(parameter_name) for night, parameter_name in mapping.items()}
+    bad = [night for night, parameter_name in parsed.items() if not parameter_name]
+    if bad:
+        raise ValueError(f"Empty per-night velocity parameter name for nights: {bad}.")
+    return parsed
+
+
+def validate_velocity_configuration_for_blocks(
+    retrieval_config: Mapping[str, Any],
+    blocks: Sequence[Any],
+    sampled_names: Sequence[str] | None = None,
+) -> None:
+    """Fail early for missing per-night velocity mappings or sampled priors."""
+
+    if not uses_per_night_velocity_offsets(retrieval_config):
+        return
+    mapping = per_night_velocity_parameter_mapping(retrieval_config)
+    selected_nights = sorted({str(block.night) for block in blocks})
+    missing_nights = [night for night in selected_nights if night not in mapping]
+    if missing_nights:
+        raise ValueError(
+            "velocity.mode=per_night_offsets is missing selected nights in "
+            f"velocity.per_night_offsets: {missing_nights}. "
+            f"Configured nights are {sorted(mapping)}."
+        )
+    if sampled_names is not None:
+        sampled = set(str(name) for name in sampled_names)
+        missing_parameters = sorted({mapping[night] for night in selected_nights if mapping[night] not in sampled})
+        if missing_parameters:
+            raise ValueError(
+                "per-night velocity parameters must be sampled in this mode; "
+                f"missing from sampler.sampled_parameters: {missing_parameters}."
+            )
+    if "Vsys" in set(str(name) for name in sampled_names or []):
+        raise ValueError(
+            "Do not sample a shared Vsys when velocity.mode=per_night_offsets. "
+            "Use only Kp plus the configured per-night deltaV_* parameters."
+        )
+
+
+def velocity_offsets_from_parameters(
+    parameters: Mapping[str, float],
+    retrieval_config: Mapping[str, Any],
+    blocks: Sequence[Any] | None = None,
+) -> dict[str, float] | None:
+    """Return night -> velocity offset values for per-night mode, else ``None``."""
+
+    if not uses_per_night_velocity_offsets(retrieval_config):
+        return None
+    mapping = per_night_velocity_parameter_mapping(retrieval_config)
+    required_nights = sorted({str(block.night) for block in blocks}) if blocks is not None else sorted(mapping)
+    offsets: dict[str, float] = {}
+    for night in required_nights:
+        if night not in mapping:
+            raise ValueError(
+                f"No velocity.per_night_offsets entry for selected night {night!r}."
+            )
+        parameter_name = mapping[night]
+        if parameter_name not in parameters:
+            raise ValueError(
+                f"Per-night velocity parameter {parameter_name!r} for night {night!r} "
+                "is missing from the current parameter dictionary."
+            )
+        offsets[night] = float(parameters[parameter_name])
+    return offsets
+
+
 def log_likelihood_from_state(theta: Any) -> float:
     """Evaluate one HRCCS likelihood using module-level sampler state."""
 
@@ -286,9 +385,14 @@ def log_likelihood_from_state(theta: Any) -> float:
             blocks=state["blocks"],
             F_model=template["F_model"],
             Kp=parameters["Kp"],
-            Vsys=parameters["Vsys"],
+            Vsys=float(parameters.get("Vsys", 0.0)),
             objective=state["objective"],
             beta=beta_from_state(parameters, state),
+            velocity_offsets_by_night=velocity_offsets_from_parameters(
+                parameters,
+                state["retrieval_config"],
+                state["blocks"],
+            ),
         )
         return float(result["objective_value"])
     except Exception as exc:
@@ -378,6 +482,27 @@ def parameter_names(sample_kp_vsys: bool, retrieval_config: Mapping[str, Any] | 
     if retrieval_config is not None:
         sampler_cfg = retrieval_config.get("sampler", {})
         configured = sampler_cfg.get("sampled_parameters", sampler_cfg.get("hrccs_parameters", None))
+
+    if uses_per_night_velocity_offsets(retrieval_config):
+        if configured is None:
+            raise ValueError(
+                "velocity.mode=per_night_offsets requires explicit "
+                "sampler.sampled_parameters including Kp and the deltaV_* parameters."
+            )
+        names = [str(name) for name in configured]
+        if "Vsys" in names:
+            raise ValueError(
+                "sampler.sampled_parameters must not include Vsys when "
+                "velocity.mode=per_night_offsets."
+            )
+        mapping = per_night_velocity_parameter_mapping(retrieval_config)
+        missing = sorted({"Kp", *mapping.values()} - set(names))
+        if missing:
+            raise ValueError(
+                "per-night velocity mode requires these sampled parameters: "
+                f"{missing}."
+            )
+        return names
 
     if configured is None:
         names = ["T_deep", "delta_T_inv", "log10_Fe"]

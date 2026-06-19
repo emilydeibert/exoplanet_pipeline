@@ -223,6 +223,58 @@ python -m retrieval.hrccs_retrieval.run_fe_emcee \
   --output retrieval/results/hrccs_emcee_fe_freevel_test
 ```
 
+Joint red runs can use one global SYSREM iteration with the existing shared
+`Vsys` behavior:
+
+```bash
+python -m retrieval.hrccs_retrieval.run_fe_emcee \
+  /home/edeibert/projects/def-ldang05/edeibert/mascara1b \
+  --retrieval-config retrieval/configs/mascara1b_fe_twopointTP_deltaP_nobeta_continuum_n1red_freevel_narrow.yaml \
+  --k 4 \
+  --nights 20240528 20240702 \
+  --cameras red \
+  --orders 2 \
+  --sample-kp-vsys \
+  --n-walkers 32 \
+  --n-steps 5 \
+  --burn-in 0 \
+  --thin 1 \
+  --n-jobs 1 \
+  --seed 123 \
+  --overwrite \
+  --progress \
+  --output retrieval/results/hrccs_joint_N1N2_sharedVsys_k4_smoke
+```
+
+For independent residual velocity offsets by night, configure
+`velocity.mode: per_night_offsets` and list the sampled `deltaV_*` parameters
+in YAML. In this mode there is no shared `Vsys`, so `--sample-kp-vsys` is not
+needed:
+
+```bash
+python -m retrieval.hrccs_retrieval.run_fe_emcee \
+  /home/edeibert/projects/def-ldang05/edeibert/mascara1b \
+  --retrieval-config retrieval/configs/mascara1b_fe_twopointTP_deltaP_nobeta_continuum_jointred_pernightV.yaml \
+  --k-per-night 20240528:4 20240702:4 20241002:3 \
+  --nights 20240528 20240702 20241002 \
+  --cameras red \
+  --orders 2 \
+  --n-walkers 32 \
+  --n-steps 5 \
+  --burn-in 0 \
+  --thin 1 \
+  --n-jobs 1 \
+  --seed 123 \
+  --overwrite \
+  --progress \
+  --output retrieval/results/hrccs_joint_N1N2N3_pernightk_pernightV_smoke
+```
+
+If both `--k` and `--k-per-night` are supplied, the global `--k` acts as a
+fallback for selected nights not listed in the per-night map. The summary JSON
+records `sysrem_iterations_by_night`, the velocity mode, and the best-fit
+per-night velocity offsets.
+
 To continue an interrupted run:
 
 ```bash
