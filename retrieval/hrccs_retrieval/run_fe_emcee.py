@@ -15,9 +15,11 @@ from types import SimpleNamespace
 from typing import Any
 
 from retrieval.prt_emission_model import (
+    build_pressure_grid,
     derived_temperature_pressure_parameters,
     setup_logging,
     temperature_pressure_parameter_report,
+    temperature_profile_from_parameters,
 )
 
 from .ccf_likelihood import OBJECTIVE_CHOICES
@@ -296,6 +298,80 @@ def save_corner_plot(path: Path, samples: Any, names: list[str], logger: Any) ->
     except Exception as exc:
         logger.warning("corner plot failed; continuing without it: %s", exc)
         return False
+
+
+def save_temperature_pressure_plot(
+    path: Path,
+    samples: Any,
+    names: list[str],
+    initial: dict[str, float],
+    fixed_parameters: dict[str, float],
+    retrieval_config: dict[str, Any],
+    logger: Any,
+    n_draws: int = 80,
+) -> bool:
+    """Save random posterior T-P profiles plus a median profile."""
+
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg", force=True)
+        import matplotlib.pyplot as plt
+        import numpy as np
+    except ImportError as exc:
+        logger.warning("matplotlib/numpy unavailable; skipping T-P profile plot: %s", exc)
+        return False
+
+    samples = np.asarray(samples, dtype=float)
+    if samples.size == 0:
+        logger.warning("No post-burn-in samples available; skipping T-P profile plot.")
+        return False
+    if samples.ndim == 1:
+        samples = samples.reshape(1, -1)
+
+    pressure_bar = np.asarray(build_pressure_grid(retrieval_config), dtype=float)
+    log_pressure = np.log10(pressure_bar)
+    rng = np.random.default_rng(12345)
+    draw_count = min(int(n_draws), int(samples.shape[0]))
+    draw_indices = rng.choice(samples.shape[0], size=draw_count, replace=False)
+
+    fig, axis = plt.subplots(figsize=(5.0, 6.0))
+    for index in draw_indices:
+        params = parameters_with_updates(initial, {name: float(value) for name, value in zip(names, samples[index])})
+        params.update({key: float(value) for key, value in fixed_parameters.items()})
+        try:
+            temperatures = temperature_profile_from_parameters(pressure_bar, params, retrieval_config)
+        except Exception:
+            continue
+        axis.plot(temperatures, log_pressure, color="0.3", alpha=0.10, linewidth=0.8)
+
+    median_sample = np.nanmedian(samples, axis=0)
+    median_params = parameters_with_updates(initial, {name: float(value) for name, value in zip(names, median_sample)})
+    median_params.update({key: float(value) for key, value in fixed_parameters.items()})
+    try:
+        median_temperatures = temperature_profile_from_parameters(pressure_bar, median_params, retrieval_config)
+    except Exception as exc:
+        logger.warning("Could not build median T-P profile plot: %s", exc)
+        plt.close(fig)
+        return False
+    axis.plot(median_temperatures, log_pressure, color="tab:red", linewidth=2.0, label="median")
+
+    tp_report = temperature_pressure_parameter_report(median_params, retrieval_config)
+    node_logp = tp_report.get("logP_nodes")
+    node_temperatures = tp_report.get("node_temperatures")
+    if node_logp and node_temperatures:
+        temp_names = tp_report.get("temperature_node_parameters", [])
+        node_t = [float(node_temperatures[str(name)]) for name in temp_names]
+        axis.scatter(node_t, [float(value) for value in node_logp], color="tab:blue", s=24, zorder=4, label="nodes")
+
+    axis.set_xlabel("Temperature [K]")
+    axis.set_ylabel("log10 Pressure [bar]")
+    axis.set_ylim(float(np.nanmax(log_pressure)), float(np.nanmin(log_pressure)))
+    axis.legend(loc="best", frameon=False)
+    fig.tight_layout()
+    fig.savefig(path, dpi=250, bbox_inches="tight")
+    plt.close(fig)
+    return True
 
 
 def write_checkpoint_summary(
@@ -583,6 +659,11 @@ def main() -> None:
         best_derived_parameters = {"error": str(exc)}
         logger.warning("Could not derive best-fit T-P parameters: %s", exc)
     try:
+        best_tp_report = temperature_pressure_parameter_report(best_parameters, retrieval_config)
+    except Exception as exc:
+        best_tp_report = {"error": str(exc)}
+        logger.warning("Could not summarize best-fit T-P profile: %s", exc)
+    try:
         best_velocity_offsets = velocity_offsets_from_parameters(best_parameters, retrieval_config, blocks)
     except Exception as exc:
         best_velocity_offsets = {"error": str(exc)}
@@ -616,6 +697,7 @@ def main() -> None:
     summary_path = output_dir / "fe_hrccs_emcee_summary.json"
     corner_path = output_dir / "fe_hrccs_emcee_corner.png"
     trace_path = output_dir / "fe_hrccs_emcee_trace.png"
+    tp_profile_path = output_dir / "fe_hrccs_emcee_temperature_pressure.png"
 
     np.savez_compressed(
         chain_path,
@@ -632,6 +714,15 @@ def main() -> None:
 
     trace_saved = save_trace_plot(trace_path, chain=chain, names=names)
     corner_saved = save_corner_plot(corner_path, samples=flat_samples, names=names, logger=logger)
+    tp_profile_saved = save_temperature_pressure_plot(
+        tp_profile_path,
+        samples=flat_samples,
+        names=names,
+        initial=initial,
+        fixed_parameters=fixed_parameters,
+        retrieval_config=retrieval_config,
+        logger=logger,
+    )
 
     output_files = {
         "log": str(output_dir / "fe_hrccs_emcee.log"),
@@ -641,6 +732,7 @@ def main() -> None:
         "summary": str(summary_path),
         "trace": str(trace_path) if trace_saved else None,
         "corner": str(corner_path) if corner_saved else None,
+        "temperature_pressure": str(tp_profile_path) if tp_profile_saved else None,
         "worker_initialization_log": str(worker_init_log_path),
     }
 
@@ -664,6 +756,7 @@ def main() -> None:
         "beta_mode": beta_config,
         "sample_kp_vsys": bool(args.sample_kp_vsys),
         "velocity_mode": velocity_mode_label,
+        "tp_profile_type": initial_tp_report.get("profile_type"),
         "per_night_velocity_parameter_mapping": per_night_velocity_parameter_mapping(retrieval_config)
         if per_night_velocity_mode
         else None,
@@ -696,6 +789,7 @@ def main() -> None:
         "best_parameters": best_parameters,
         "derived_best_parameters": best_derived_parameters,
         "initial_temperature_pressure_report": initial_tp_report,
+        "best_temperature_pressure_report": best_tp_report,
         "best_log_probability": best_log_probability,
         "backend_file": str(backend_path),
         "worker_initialization_log": str(worker_init_log_path),

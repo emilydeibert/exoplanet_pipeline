@@ -317,6 +317,7 @@ Expected emcee outputs:
 - `fe_hrccs_emcee_summary.json`
 - `fe_hrccs_emcee_corner.png`
 - `fe_hrccs_emcee_trace.png`
+- `fe_hrccs_emcee_temperature_pressure.png`
 
 ## Free Two-Point T-P Profile
 
@@ -376,6 +377,27 @@ than `min_delta_logP`. For the staged delta-pressure configs, the pressure grid
 runs from `1e-8` to `1` bar, so `logP_lower` is capped at `0.0` unless a future
 config explicitly extends the pRT grid deeper.
 
+The fixed-pressure-node mode allows an arbitrary number of fixed pressure
+nodes with independently sampled temperatures:
+
+```yaml
+tp_profile:
+  profile_type: fixed_pressure_nodes
+  logP_nodes: [-1.0, -3.0, -5.0]
+  temperature_parameters:
+    - T_node_deep
+    - T_node_mid
+    - T_node_high
+  interpolation: linear
+```
+
+The node list must be strictly monotonic in log10 pressure by default. The
+order may be deep-to-high or high-to-deep; internally the code reverses the
+arrays only for interpolation. It does not impose an inversion or monotonic
+temperature shape. The summary JSON records the node pressures, node
+temperature parameters, best-fit node temperatures, and
+`T_high_minus_T_deep`.
+
 The HRCCS samplers remain backward-compatible. If `sampler.sampled_parameters`
 is absent, they use the old Fe-only parameter list. If it is present, the YAML
 list controls atmospheric and nuisance parameters, while the CLI still controls
@@ -395,6 +417,13 @@ Delta-pressure staged configs:
 ```text
 retrieval/configs/mascara1b_fe_twopointTP_deltaP_nobeta_continuum_n1red_freevel_narrow.yaml
 retrieval/configs/mascara1b_fe_twopointTP_deltaP_nobeta_continuum_n1red_fixedP.yaml
+```
+
+Fixed-pressure-node staged configs:
+
+```text
+retrieval/configs/mascara1b_fe_fixedPnodes3_nobeta_continuum_n1red_freevel.yaml
+retrieval/configs/mascara1b_feTi_fixedPnodes3_nobeta_continuum_jointred_pernightV.yaml
 ```
 
 Fixed-pressure Narval smoke test:
@@ -442,6 +471,49 @@ python -m retrieval.hrccs_retrieval.run_fe_emcee \
 The run logs and summary JSON include sampled T-P values and derived
 `T_upper`/`logP_lower` values. Prior-edge diagnostics still apply only to
 sampled parameters.
+
+Fixed-pressure-node Fe-only Narval smoke test:
+
+```bash
+python -m retrieval.hrccs_retrieval.run_fe_emcee \
+  /home/edeibert/projects/def-ldang05/edeibert/mascara1b \
+  --retrieval-config retrieval/configs/mascara1b_fe_fixedPnodes3_nobeta_continuum_n1red_freevel.yaml \
+  --k 4 \
+  --nights 20240528 \
+  --cameras red \
+  --orders 2 \
+  --sample-kp-vsys \
+  --n-walkers 32 \
+  --n-steps 5 \
+  --burn-in 0 \
+  --thin 1 \
+  --n-jobs 1 \
+  --seed 123 \
+  --overwrite \
+  --progress \
+  --output retrieval/results/hrccs_emcee_fixedPnodes3_fe_n1red_smoke_k4
+```
+
+Fixed-pressure-node joint Fe+Ti Narval smoke test:
+
+```bash
+python -m retrieval.hrccs_retrieval.run_fe_emcee \
+  /home/edeibert/projects/def-ldang05/edeibert/mascara1b \
+  --retrieval-config retrieval/configs/mascara1b_feTi_fixedPnodes3_nobeta_continuum_jointred_pernightV.yaml \
+  --k-per-night 20240528:4 20240702:4 20241002:3 \
+  --nights 20240528 20240702 20241002 \
+  --cameras red \
+  --orders 2 \
+  --n-walkers 32 \
+  --n-steps 5 \
+  --burn-in 0 \
+  --thin 1 \
+  --n-jobs 1 \
+  --seed 123 \
+  --overwrite \
+  --progress \
+  --output retrieval/results/hrccs_emcee_fixedPnodes3_feTi_jointred_pernightV_smoke
+```
 
 ## Species And Beta
 

@@ -296,6 +296,7 @@ def main() -> None:
             "parameter_names": names,
             "beta_mode": beta_config,
             "velocity_mode": velocity_mode_label,
+            "tp_profile_type": initial_tp_report.get("profile_type"),
             "per_night_velocity_parameter_mapping": per_night_velocity_parameter_mapping(retrieval_config)
             if per_night_velocity_mode
             else None,
@@ -396,6 +397,11 @@ def main() -> None:
         best_derived_parameters = {"error": str(exc)}
         logger.warning("Could not derive best-fit T-P parameters: %s", exc)
     try:
+        best_tp_report = temperature_pressure_parameter_report(best, retrieval_config)
+    except Exception as exc:
+        best_tp_report = {"error": str(exc)}
+        logger.warning("Could not summarize best-fit T-P profile: %s", exc)
+    try:
         best_velocity_offsets = velocity_offsets_from_parameters(best, retrieval_config, blocks)
     except Exception as exc:
         best_velocity_offsets = {"error": str(exc)}
@@ -420,6 +426,7 @@ def main() -> None:
         "parameter_names": names,
         "beta_mode": beta_config,
         "velocity_mode": velocity_mode_label,
+        "tp_profile_type": initial_tp_report.get("profile_type"),
         "per_night_velocity_parameter_mapping": per_night_velocity_parameter_mapping(retrieval_config)
         if per_night_velocity_mode
         else None,
@@ -429,6 +436,7 @@ def main() -> None:
         "derived_best_fit_parameters": best_derived_parameters,
         "derived_parameter_summaries": derived_parameter_summaries,
         "initial_temperature_pressure_report": initial_tp_report,
+        "best_temperature_pressure_report": best_tp_report,
         "best_log_likelihood": float(logl[best_index]),
         "log_evidence": evidence,
         "nlive": int(args.nlive),

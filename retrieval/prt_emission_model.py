@@ -562,6 +562,150 @@ def free_two_point_inversion_delta_parameters(
     }
 
 
+def fixed_pressure_nodes_parameters(
+    parameters: Mapping[str, float],
+    config: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Validate fixed-pressure T-P nodes and return JSON-friendly metadata.
+
+    ``logP_nodes`` are fixed log10 pressures in bar.  The node order may be
+    deep-to-high or high-to-deep, but it must be strictly monotonic by default.
+    Non-monotonic nodes are only sorted internally when
+    ``require_monotonic_logP_nodes`` is explicitly false.
+    """
+
+    np = require_numpy()
+    tp_cfg = config.get("tp_profile", {})
+    if "logP_nodes" not in tp_cfg:
+        raise ValueError("tp_profile.logP_nodes is required for fixed_pressure_nodes.")
+    if "temperature_parameters" not in tp_cfg:
+        raise ValueError("tp_profile.temperature_parameters is required for fixed_pressure_nodes.")
+
+    logP_nodes = [float(value) for value in tp_cfg.get("logP_nodes", [])]
+    temperature_parameters = [str(name) for name in tp_cfg.get("temperature_parameters", [])]
+    if len(logP_nodes) != len(temperature_parameters):
+        raise ValueError(
+            "tp_profile.logP_nodes and tp_profile.temperature_parameters must have "
+            f"the same length; got {len(logP_nodes)} and {len(temperature_parameters)}."
+        )
+    if len(logP_nodes) < 2:
+        raise ValueError("fixed_pressure_nodes requires at least two pressure nodes.")
+    missing = [name for name in temperature_parameters if name not in parameters]
+    if missing:
+        raise ValueError(f"Missing fixed-pressure-node temperature parameters: {missing}.")
+
+    node_temperatures = [float(parameters[name]) for name in temperature_parameters]
+    if not np.all(np.isfinite(np.asarray(logP_nodes, dtype=float))):
+        raise ValueError("tp_profile.logP_nodes must all be finite.")
+    if not np.all(np.isfinite(np.asarray(node_temperatures, dtype=float))):
+        raise ValueError("fixed-pressure-node temperatures must all be finite.")
+
+    require_monotonic = bool(tp_cfg.get("require_monotonic_logP_nodes", True))
+    diffs = np.diff(np.asarray(logP_nodes, dtype=float))
+    strictly_increasing = bool(np.all(diffs > 0))
+    strictly_decreasing = bool(np.all(diffs < 0))
+    monotonic_direction = "increasing" if strictly_increasing else "decreasing" if strictly_decreasing else "non_monotonic"
+    if require_monotonic and not (strictly_increasing or strictly_decreasing):
+        raise ValueError(
+            "tp_profile.logP_nodes must be strictly monotonic for fixed_pressure_nodes; "
+            f"got {logP_nodes}."
+        )
+
+    grid_log_min, grid_log_max = pressure_grid_log10_bounds(config)
+    for idx, logP_node in enumerate(logP_nodes):
+        _validate_log_pressure_inside_grid(
+            f"logP_nodes[{idx}]",
+            float(logP_node),
+            grid_log_min,
+            grid_log_max,
+        )
+
+    enforce_temperature_bounds = bool(tp_cfg.get("enforce_temperature_bounds", False))
+    if enforce_temperature_bounds:
+        priors = config.get("priors", {})
+        for name, temperature in zip(temperature_parameters, node_temperatures):
+            if name not in priors:
+                raise ValueError(
+                    "tp_profile.enforce_temperature_bounds=true requires prior bounds "
+                    f"for temperature parameter {name!r}."
+                )
+            lo, hi = [float(value) for value in priors[name]]
+            if not lo <= float(temperature) <= hi:
+                raise ValueError(
+                    f"Temperature parameter {name}={temperature:.6g} is outside "
+                    f"configured prior bounds [{lo:.6g}, {hi:.6g}]."
+                )
+
+    order = np.argsort(np.asarray(logP_nodes, dtype=float))
+    sorted_logP = [float(logP_nodes[int(idx)]) for idx in order]
+    sorted_temperatures = [float(node_temperatures[int(idx)]) for idx in order]
+    sorted_names = [str(temperature_parameters[int(idx)]) for idx in order]
+
+    deepest_idx = int(np.nanargmax(np.asarray(logP_nodes, dtype=float)))
+    highest_idx = int(np.nanargmin(np.asarray(logP_nodes, dtype=float)))
+    T_deep = float(node_temperatures[deepest_idx])
+    T_high = float(node_temperatures[highest_idx])
+
+    interpolation = str(tp_cfg.get("interpolation", "linear")).lower()
+    if interpolation not in {"linear", "pchip"}:
+        raise ValueError(
+            "tp_profile.interpolation for fixed_pressure_nodes must be 'linear' "
+            f"or 'pchip'; got {interpolation!r}."
+        )
+
+    return {
+        "profile_type": "fixed_pressure_nodes",
+        "logP_nodes": logP_nodes,
+        "temperature_parameters": temperature_parameters,
+        "node_temperatures": {
+            name: float(value) for name, value in zip(temperature_parameters, node_temperatures)
+        },
+        "interpolation": interpolation,
+        "require_monotonic_logP_nodes": require_monotonic,
+        "monotonic_direction": monotonic_direction,
+        "enforce_temperature_bounds": enforce_temperature_bounds,
+        "sorted_logP_nodes": sorted_logP,
+        "sorted_temperature_parameters": sorted_names,
+        "sorted_node_temperatures": sorted_temperatures,
+        "T_deep": T_deep,
+        "T_high": T_high,
+        "T_high_minus_T_deep": float(T_high - T_deep),
+        "pressure_grid_log10_min": grid_log_min,
+        "pressure_grid_log10_max": grid_log_max,
+    }
+
+
+def fixed_pressure_nodes_profile(
+    pressures_bar: Any,
+    parameters: Mapping[str, float],
+    config: Mapping[str, Any],
+) -> Any:
+    """Interpolate fixed-pressure node temperatures onto the pRT grid."""
+
+    np = require_numpy()
+    pressures_bar = np.asarray(pressures_bar, dtype=float)
+    node_info = fixed_pressure_nodes_parameters(parameters, config)
+    log_p = np.log10(pressures_bar)
+    xp = np.asarray(node_info["sorted_logP_nodes"], dtype=float)
+    fp = np.asarray(node_info["sorted_node_temperatures"], dtype=float)
+
+    if node_info["interpolation"] == "linear":
+        return np.interp(log_p, xp, fp, left=float(fp[0]), right=float(fp[-1]))
+
+    try:
+        from scipy.interpolate import PchipInterpolator
+    except ImportError as exc:  # pragma: no cover - depends on user env
+        raise RuntimeError(
+            "tp_profile.interpolation='pchip' requires scipy. "
+            "Use interpolation: linear or install scipy."
+        ) from exc
+    interpolator = PchipInterpolator(xp, fp, extrapolate=False)
+    temperatures = np.asarray(interpolator(log_p), dtype=float)
+    temperatures[log_p < xp[0]] = float(fp[0])
+    temperatures[log_p > xp[-1]] = float(fp[-1])
+    return temperatures
+
+
 def derived_temperature_pressure_parameters(
     parameters: Mapping[str, float],
     config: Mapping[str, Any],
@@ -574,6 +718,11 @@ def derived_temperature_pressure_parameters(
         return {
             "T_upper": float(derived["T_upper"]),
             "logP_lower": float(derived["logP_lower"]),
+        }
+    if profile_type == "fixed_pressure_nodes":
+        node_info = fixed_pressure_nodes_parameters(parameters, config)
+        return {
+            "T_high_minus_T_deep": float(node_info["T_high_minus_T_deep"]),
         }
     return {}
 
@@ -622,6 +771,18 @@ def temperature_pressure_parameter_report(
             "logP_upper": float(parameters["logP_upper"]),
         }
         report["derived"] = {"T_upper": T_deep + delta_T_inv}
+    elif profile_type == "fixed_pressure_nodes":
+        node_info = fixed_pressure_nodes_parameters(parameters, config)
+        report["logP_nodes"] = list(node_info["logP_nodes"])
+        report["temperature_node_parameters"] = list(node_info["temperature_parameters"])
+        report["node_temperatures"] = dict(node_info["node_temperatures"])
+        report["interpolation"] = str(node_info["interpolation"])
+        report["require_monotonic_logP_nodes"] = bool(node_info["require_monotonic_logP_nodes"])
+        report["monotonic_direction"] = str(node_info["monotonic_direction"])
+        report["sampled"] = dict(node_info["node_temperatures"])
+        report["derived"] = {
+            "T_high_minus_T_deep": float(node_info["T_high_minus_T_deep"]),
+        }
     else:
         report["sampled"] = {
             key: float(parameters[key])
@@ -635,7 +796,8 @@ def temperature_profile_type(config: Mapping[str, Any]) -> str:
     """Return the configured T-P profile type with backward-compatible default."""
 
     if "tp_profile" in config:
-        return str(config.get("tp_profile", {}).get("type", "fixed_two_point_inversion"))
+        tp_cfg = config.get("tp_profile", {})
+        return str(tp_cfg.get("profile_type", tp_cfg.get("type", "fixed_two_point_inversion")))
     return str(config.get("temperature_profile", {}).get("type", "fixed_two_point_inversion"))
 
 
@@ -698,11 +860,19 @@ def temperature_profile_from_parameters(
             min_delta_T=derived["min_delta_T"],
         )
 
+    if profile_type == "fixed_pressure_nodes":
+        return fixed_pressure_nodes_profile(
+            pressures_bar=pressures_bar,
+            parameters=parameters,
+            config=config,
+        )
+
     raise ValueError(
         "Unknown T-P profile type. Use fixed_two_point_inversion, "
         "two_point_inversion, free_two_point_inversion, or "
         "free_two_point_inversion_direct, or "
-        f"free_two_point_inversion_delta; got {profile_type!r}."
+        "free_two_point_inversion_delta, or fixed_pressure_nodes; "
+        f"got {profile_type!r}."
     )
 
 
@@ -1835,6 +2005,12 @@ def parameters_from_config(config: Mapping[str, Any]) -> dict[str, float]:
         required.extend(["T_lower", "T_upper", "logP_lower", "logP_upper"])
     elif profile_type == "free_two_point_inversion_delta":
         required.extend(["T_lower", "delta_T_inv", "logP_upper", "delta_logP"])
+    elif profile_type == "fixed_pressure_nodes":
+        tp_cfg = config.get("tp_profile", {})
+        temperature_parameters = tp_cfg.get("temperature_parameters", None)
+        if temperature_parameters is None:
+            raise ValueError("tp_profile.temperature_parameters is required for fixed_pressure_nodes.")
+        required.extend(str(name) for name in temperature_parameters)
     required.extend(entry["abundance_parameter"] for entry in active_species_entries(config))
     missing = [key for key in required if key not in params]
     if missing:
