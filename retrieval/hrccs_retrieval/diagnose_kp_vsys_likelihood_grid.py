@@ -19,7 +19,16 @@ from .data_loading import (
     split_cli_list,
 )
 from .model_builder import build_prt_xcorr_template, load_retrieval_config_and_parameters, parameters_with_updates
-from .sampler_common import beta_configuration, beta_from_state, beta_mode_label, fixed_parameters_from_config, parameter_names
+from .sampler_common import (
+    alpha_configuration,
+    alpha_from_state,
+    alpha_mode_label,
+    beta_configuration,
+    beta_from_state,
+    beta_mode_label,
+    fixed_parameters_from_config,
+    parameter_names,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -128,9 +137,11 @@ def main() -> None:
     base_parameters = dict(parameters)
 
     names = parameter_names(sample_kp_vsys=True, retrieval_config=retrieval_config)
+    alpha_config = alpha_configuration(names, retrieval_config, args.objective)
     beta_config = beta_configuration(names, retrieval_config, args.objective)
     logger.info("Fixed atmospheric/nuisance parameters from %s: %s", args.parameters_json, parameters)
     logger.info("Objective: %s", args.objective)
+    logger.info("alpha mode: %s", alpha_mode_label(alpha_config))
     logger.info("beta mode: %s", beta_mode_label(beta_config))
 
     template = build_prt_xcorr_template(retrieval_config, exopipe_config, base_parameters, logger=logger)
@@ -149,7 +160,7 @@ def main() -> None:
     kp_grid = inclusive_grid(args.kp_min, args.kp_max, args.kp_step)
     vsys_grid = inclusive_grid(args.vsys_min, args.vsys_max, args.vsys_step)
     loglike_map = np.full((kp_grid.size, vsys_grid.size), np.nan, dtype=float)
-    beta_state = {"beta_config": beta_config}
+    scale_state = {"alpha_config": alpha_config, "beta_config": beta_config}
 
     for kp_idx, kp in enumerate(kp_grid):
         for vsys_idx, vsys in enumerate(vsys_grid):
@@ -162,7 +173,8 @@ def main() -> None:
                 Kp=float(kp),
                 Vsys=float(vsys),
                 objective=args.objective,
-                beta=beta_from_state(parameters, beta_state),
+                alpha=alpha_from_state(parameters, scale_state),
+                beta=beta_from_state(parameters, scale_state),
             )
             loglike_map[kp_idx, vsys_idx] = float(result["objective_value"])
 
@@ -198,6 +210,7 @@ def main() -> None:
         "parameters_json": str(args.parameters_json),
         "objective": args.objective,
         "fixed_parameters_used": {key: float(value) for key, value in base_parameters.items()},
+        "alpha_mode": alpha_config,
         "beta_mode": beta_config,
         "kp_grid": [float(kp_grid[0]), float(kp_grid[-1]), float(args.kp_step)],
         "vsys_grid": [float(vsys_grid[0]), float(vsys_grid[-1]), float(args.vsys_step)],

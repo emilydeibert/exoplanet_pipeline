@@ -21,14 +21,21 @@ from .data_loading import (
     load_hrccs_data,
     load_project_modules,
     log_model_data_wavelength_padding,
+    orders_by_block,
     parse_int_list,
+    parse_k_per_block,
     parse_k_per_night,
+    parse_orders_per_block,
+    parse_orders_per_camera,
     scalar_sysrem_iteration_if_uniform,
     split_cli_list,
+    sysrem_iterations_by_block,
     sysrem_iterations_by_night,
 )
 from .model_builder import build_prt_xcorr_template, load_retrieval_config_and_parameters
 from .sampler_common import (
+    alpha_configuration,
+    alpha_mode_label,
     beta_configuration,
     beta_mode_label,
     draw_benchmark_thetas,
@@ -39,6 +46,8 @@ from .sampler_common import (
     multiprocessing_context,
     parameter_names,
     per_night_velocity_parameter_mapping,
+    physical_scale_from_parameters,
+    physical_scale_posterior_summary,
     prior_bounds,
     prior_transform_from_state,
     read_worker_init_records,
@@ -61,9 +70,33 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Per-night SYSREM iterations as NIGHT:K entries, e.g. 20240528:4 20240702:4.",
     )
+    parser.add_argument(
+        "--k-per-block",
+        nargs="+",
+        default=None,
+        help=(
+            "Strict per-night-per-camera SYSREM iterations as NIGHT:CAMERA:K entries, "
+            "e.g. 20240528:red:4 20240528:blue:6."
+        ),
+    )
     parser.add_argument("--nights", nargs="+", default=None)
     parser.add_argument("--cameras", nargs="+", default=None)
     parser.add_argument("--orders", nargs="+", default=None)
+    parser.add_argument(
+        "--orders-per-camera",
+        nargs="+",
+        default=None,
+        help="Per-camera order lists/ranges, e.g. red:2-32 blue:0-26.",
+    )
+    parser.add_argument(
+        "--orders-per-block",
+        nargs="+",
+        default=None,
+        help=(
+            "Per-night-per-camera order lists/ranges, e.g. "
+            "20240528:red:2-32 20240528:blue:0-26."
+        ),
+    )
     parser.add_argument("--output", required=True)
     parser.add_argument("--nlive", type=int, default=100)
     parser.add_argument("--maxcall", type=int, default=None)
@@ -107,6 +140,18 @@ def main() -> None:
     exopipe_config, exopipe_params = load_project_modules(args.project_path)
     retrieval_config, initial = load_retrieval_config_and_parameters(args.retrieval_config)
     k_per_night = parse_k_per_night(args.k_per_night)
+    k_per_block = parse_k_per_block(args.k_per_block) if args.k_per_block is not None else None
+    global_orders = parse_int_list(args.orders)
+    orders_per_camera = (
+        parse_orders_per_camera(args.orders_per_camera)
+        if args.orders_per_camera is not None
+        else None
+    )
+    orders_per_block = (
+        parse_orders_per_block(args.orders_per_block)
+        if args.orders_per_block is not None
+        else None
+    )
     per_night_velocity_mode = uses_per_night_velocity_offsets(retrieval_config)
     velocity_mode_label = velocity_mode(retrieval_config)
 
@@ -125,6 +170,7 @@ def main() -> None:
         args.maxcall = 200 if args.maxcall is None else min(int(args.maxcall), 200)
 
     names = parameter_names(args.sample_kp_vsys, retrieval_config)
+    alpha_config = alpha_configuration(names, retrieval_config, args.objective)
     beta_config = beta_configuration(names, retrieval_config, args.objective)
     yaml_fixed_parameters = fixed_parameters_from_config(retrieval_config)
     bounds = prior_bounds(retrieval_config, names)
@@ -141,10 +187,12 @@ def main() -> None:
     else:
         logger.info("Fixed Kp=%.3f Vsys=%.3f unless sampled", fixed_kp, fixed_vsys)
     logger.info(
-        "SYSREM CLI selection: global k=%s, k_per_night=%s",
+        "SYSREM CLI selection: global k=%s, k_per_night=%s, k_per_block=%s",
         None if args.k is None else int(args.k),
         k_per_night,
+        k_per_block,
     )
+    logger.info("alpha mode: %s", alpha_mode_label(alpha_config))
     logger.info("beta mode: %s", beta_mode_label(beta_config))
     logger.info("Dynesty execution mode: %s with n_jobs=%d", "serial" if n_jobs == 1 else "parallel", n_jobs)
     initial_tp_report = temperature_pressure_parameter_report(
@@ -172,16 +220,30 @@ def main() -> None:
         params=exopipe_params,
         k=args.k,
         k_per_night=k_per_night,
+        k_per_block=k_per_block,
+        orders_per_camera=orders_per_camera,
+        orders_per_block=orders_per_block,
         nights=split_cli_list(args.nights),
         cameras=split_cli_list(args.cameras),
         model_array=initial_template["model_array"],
-        orders=parse_int_list(args.orders),
+        orders=global_orders,
         logger=logger,
     )
     validate_velocity_configuration_for_blocks(retrieval_config, blocks, sampled_names=names)
-    sysrem_by_night = sysrem_iterations_by_night(blocks)
+    sysrem_by_block = sysrem_iterations_by_block(blocks)
+    if k_per_block is None:
+        sysrem_by_night = sysrem_iterations_by_night(blocks)
+    else:
+        try:
+            sysrem_by_night = sysrem_iterations_by_night(blocks)
+        except ValueError:
+            sysrem_by_night = None
     scalar_sysrem_iteration = scalar_sysrem_iteration_if_uniform(blocks)
-    logger.info("SYSREM iterations by night: %s", sysrem_by_night)
+    resolved_orders_by_block = orders_by_block(blocks)
+    logger.info("SYSREM iterations by block: %s", sysrem_by_block)
+    if sysrem_by_night is not None:
+        logger.info("SYSREM iterations by night: %s", sysrem_by_night)
+    logger.info("Resolved orders by block: %s", resolved_orders_by_block)
     wavelength_padding_summary = log_model_data_wavelength_padding(blocks, retrieval_config, logger=logger)
 
     worker_init_log_path = output_dir / "fe_hrccs_worker_initialization.jsonl"
@@ -200,6 +262,7 @@ def main() -> None:
         "fixed_vsys": float(fixed_vsys),
         "sample_kp_vsys": bool(args.sample_kp_vsys),
         "objective": args.objective,
+        "alpha_config": alpha_config,
         "beta_config": beta_config,
         "cache_prt_atmosphere": n_jobs > 1,
         "worker_init_log_path": str(worker_init_log_path),
@@ -292,8 +355,11 @@ def main() -> None:
             "retrieval_config": str(args.retrieval_config),
             "sysrem_iteration": scalar_sysrem_iteration,
             "sysrem_iterations_by_night": sysrem_by_night,
+            "sysrem_iterations_by_block": sysrem_by_block,
+            "orders_by_block": resolved_orders_by_block,
             "objective": args.objective,
             "parameter_names": names,
+            "alpha_mode": alpha_config,
             "beta_mode": beta_config,
             "velocity_mode": velocity_mode_label,
             "tp_profile_type": initial_tp_report.get("profile_type"),
@@ -406,6 +472,16 @@ def main() -> None:
     except Exception as exc:
         best_velocity_offsets = {"error": str(exc)}
         logger.warning("Could not summarize best-fit per-night velocity offsets: %s", exc)
+    try:
+        best_alpha = physical_scale_from_parameters(best, alpha_config)
+    except Exception as exc:
+        best_alpha = None
+        logger.warning("Could not summarize best-fit physical alpha: %s", exc)
+    try:
+        best_beta = physical_scale_from_parameters(best, beta_config)
+    except Exception as exc:
+        best_beta = None
+        logger.warning("Could not summarize best-fit physical beta: %s", exc)
     fixed_for_summary = dict(yaml_fixed_parameters)
     if not args.sample_kp_vsys and not per_night_velocity_mode:
         fixed_for_summary.update({"Kp": float(fixed_kp), "Vsys": float(fixed_vsys)})
@@ -416,15 +492,24 @@ def main() -> None:
         fixed_parameters=fixed_for_summary,
         retrieval_config=retrieval_config,
     )
+    alpha_posterior_summary = physical_scale_posterior_summary(samples, names, alpha_config)
+    beta_posterior_summary = physical_scale_posterior_summary(samples, names, beta_config)
 
     summary = {
         "project_path": str(args.project_path),
         "retrieval_config": str(args.retrieval_config),
         "sysrem_iteration": scalar_sysrem_iteration,
         "sysrem_iterations_by_night": sysrem_by_night,
+        "sysrem_iterations_by_block": sysrem_by_block,
+        "orders_by_block": resolved_orders_by_block,
         "objective": args.objective,
         "parameter_names": names,
+        "alpha_mode": alpha_config,
         "beta_mode": beta_config,
+        "best_fit_alpha": best_alpha,
+        "best_fit_beta": best_beta,
+        "alpha_posterior_summary": alpha_posterior_summary,
+        "beta_posterior_summary": beta_posterior_summary,
         "velocity_mode": velocity_mode_label,
         "tp_profile_type": initial_tp_report.get("profile_type"),
         "per_night_velocity_parameter_mapping": per_night_velocity_parameter_mapping(retrieval_config)
@@ -470,6 +555,10 @@ def main() -> None:
         logger.warning("corner is not installed; skipping corner plot.")
 
     logger.info("Sampler complete. Best parameters: %s", best)
+    if best_alpha is not None:
+        logger.info("Best physical alpha: %.6g", best_alpha)
+    if best_beta is not None:
+        logger.info("Best physical beta: %.6g", best_beta)
     if best_derived_parameters:
         logger.info("Best derived T-P parameters: %s", best_derived_parameters)
     logger.info("Saved HRCCS sampler outputs to %s", output_dir)

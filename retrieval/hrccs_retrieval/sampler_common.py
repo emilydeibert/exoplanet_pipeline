@@ -27,6 +27,7 @@ from .model_builder import build_prt_xcorr_template, parameters_with_updates
 
 _SAMPLER_STATE: dict[str, Any] = {}
 BETA_PARAMETER_NAMES = {"log_beta", "ln_beta"}
+ALPHA_PARAMETER_NAMES = {"alpha", "log_alpha", "ln_alpha"}
 PER_NIGHT_OFFSETS_MODE = "per_night_offsets"
 
 
@@ -193,6 +194,163 @@ def fixed_parameters_from_config(retrieval_config: Mapping[str, Any]) -> dict[st
     return {str(key): float(value) for key, value in fixed.items()}
 
 
+def _default_scale_transform(parameter_name: str) -> str:
+    """Return the conventional physical transform for a scale parameter."""
+
+    if parameter_name.startswith("log_"):
+        return "pow10"
+    if parameter_name.startswith("ln_"):
+        return "exp"
+    return "identity"
+
+
+def _canonical_scale_transform(transform: Any, parameter_name: str) -> str:
+    """Normalize scale-transform aliases."""
+
+    if transform is None:
+        return _default_scale_transform(parameter_name)
+    value = str(transform).strip().lower()
+    aliases = {
+        "10**x": "pow10",
+        "base10": "pow10",
+        "log10": "pow10",
+        "pow10": "pow10",
+        "exp": "exp",
+        "exponential": "exp",
+        "identity": "identity",
+        "linear": "identity",
+        "none": "identity",
+    }
+    if value not in aliases:
+        raise ValueError(
+            f"Unknown scale transform {transform!r}; use pow10, exp, or identity."
+        )
+    return aliases[value]
+
+
+def _physical_scale_value(raw_value: float, transform: str) -> float:
+    """Transform a sampled/fixed scale parameter into physical units."""
+
+    import math
+
+    raw_value = float(raw_value)
+    if transform == "pow10":
+        value = 10.0 ** raw_value
+    elif transform == "exp":
+        value = math.exp(raw_value)
+    elif transform == "identity":
+        value = raw_value
+    else:
+        raise ValueError(f"Unknown canonical scale transform {transform!r}.")
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError(f"Physical scale must be finite and positive; got {value}.")
+    return float(value)
+
+
+def alpha_configuration(
+    names: Sequence[str],
+    retrieval_config: Mapping[str, Any],
+    objective: str,
+) -> dict[str, Any]:
+    """Resolve optional sampled/fixed alpha model-amplitude scaling."""
+
+    sampled_candidates = sorted(ALPHA_PARAMETER_NAMES.intersection(set(names)))
+    fixed_parameters = fixed_parameters_from_config(retrieval_config)
+    fixed_candidates = sorted(ALPHA_PARAMETER_NAMES.intersection(set(fixed_parameters)))
+    configured = retrieval_config.get("alpha_mode", None)
+
+    if configured is None:
+        if len(sampled_candidates) > 1:
+            raise ValueError(f"Only one alpha parameter may be sampled; got {sampled_candidates}.")
+        if len(fixed_candidates) > 1:
+            raise ValueError(f"Only one alpha parameter may be fixed; got {fixed_candidates}.")
+        if sampled_candidates and fixed_candidates:
+            raise ValueError(
+                "Alpha cannot be both sampled and fixed; "
+                f"sampled={sampled_candidates}, fixed={fixed_candidates}."
+            )
+        if sampled_candidates:
+            parameter = sampled_candidates[0]
+            mode = "sampled"
+            raw_value = None
+        elif fixed_candidates:
+            parameter = fixed_candidates[0]
+            mode = "fixed"
+            raw_value = float(fixed_parameters[parameter])
+        else:
+            return {
+                "mode": "disabled",
+                "parameter": None,
+                "transform": None,
+                "value": None,
+            }
+        transform = _canonical_scale_transform(None, parameter)
+    else:
+        if not isinstance(configured, Mapping):
+            raise ValueError("alpha_mode must be a YAML mapping when supplied.")
+        mode = str(configured.get("mode", "disabled")).lower()
+        if mode == "disabled":
+            if sampled_candidates or fixed_candidates:
+                raise ValueError(
+                    "alpha_mode.mode=disabled conflicts with alpha parameters in "
+                    "sampler.sampled_parameters or fixed_parameters."
+                )
+            return {
+                "mode": "disabled",
+                "parameter": None,
+                "transform": None,
+                "value": None,
+            }
+        if mode not in {"sampled", "fixed"}:
+            raise ValueError("alpha_mode.mode must be disabled, sampled, or fixed.")
+
+        parameter = configured.get("parameter", None)
+        if parameter is None:
+            candidates = sampled_candidates if mode == "sampled" else fixed_candidates
+            if len(candidates) != 1:
+                raise ValueError(
+                    f"alpha_mode.mode={mode} requires alpha_mode.parameter when "
+                    f"it cannot be inferred uniquely; candidates={candidates}."
+                )
+            parameter = candidates[0]
+        parameter = str(parameter)
+        transform = _canonical_scale_transform(configured.get("transform", None), parameter)
+
+        if mode == "sampled":
+            if parameter not in names:
+                raise ValueError(
+                    f"Sampled alpha parameter {parameter!r} is missing from "
+                    "sampler.sampled_parameters."
+                )
+            if parameter in fixed_parameters:
+                raise ValueError(f"Alpha parameter {parameter!r} cannot be both sampled and fixed.")
+            raw_value = None
+        else:
+            if parameter in fixed_parameters:
+                raw_value = float(fixed_parameters[parameter])
+            elif "value" in configured:
+                raw_value = float(configured["value"])
+            else:
+                raise ValueError(
+                    f"Fixed alpha parameter {parameter!r} needs fixed_parameters.{parameter} "
+                    "or alpha_mode.value."
+                )
+
+    if str(objective) != "matched_filter_loglike":
+        raise NotImplementedError(
+            "alpha is only implemented for matched_filter_loglike; "
+            f"got objective={objective!r}."
+        )
+    if mode == "fixed":
+        _physical_scale_value(float(raw_value), transform)
+    return {
+        "mode": mode,
+        "parameter": parameter,
+        "transform": transform,
+        "value": raw_value,
+    }
+
+
 def beta_configuration(
     names: Sequence[str],
     retrieval_config: Mapping[str, Any],
@@ -212,11 +370,21 @@ def beta_configuration(
             f"Beta cannot be both sampled and fixed; sampled={sampled}, fixed={fixed_beta}."
         )
     if sampled:
-        mode = {"mode": "sampled", "parameter": sampled[0], "value": None}
+        mode = {
+            "mode": "sampled",
+            "parameter": sampled[0],
+            "transform": _default_scale_transform(sampled[0]),
+            "value": None,
+        }
     elif fixed_beta:
-        mode = {"mode": "fixed", "parameter": fixed_beta[0], "value": float(fixed[fixed_beta[0]])}
+        mode = {
+            "mode": "fixed",
+            "parameter": fixed_beta[0],
+            "transform": _default_scale_transform(fixed_beta[0]),
+            "value": float(fixed[fixed_beta[0]]),
+        }
     else:
-        mode = {"mode": "disabled", "parameter": None, "value": None}
+        mode = {"mode": "disabled", "parameter": None, "transform": None, "value": None}
 
     if mode["mode"] == "disabled":
         return mode
@@ -231,20 +399,26 @@ def beta_configuration(
 def beta_from_state(parameters: Mapping[str, float], state: Mapping[str, Any]) -> float | None:
     """Return beta according to explicit sampler-state beta mode."""
 
-    import math
-
     beta_cfg = state.get("beta_config", {"mode": "disabled"})
     mode = beta_cfg.get("mode", "disabled")
     if mode == "disabled":
         return None
 
     name = str(beta_cfg["parameter"])
-    value = float(parameters[name])
-    if name == "log_beta":
-        return 10.0 ** value
-    if name == "ln_beta":
-        return math.exp(value)
-    raise ValueError(f"Unknown beta parameter name {name!r}.")
+    raw_value = float(beta_cfg["value"]) if mode == "fixed" else float(parameters[name])
+    return _physical_scale_value(raw_value, str(beta_cfg["transform"]))
+
+
+def alpha_from_state(parameters: Mapping[str, float], state: Mapping[str, Any]) -> float | None:
+    """Return physical alpha according to explicit sampler-state alpha mode."""
+
+    alpha_cfg = state.get("alpha_config", {"mode": "disabled"})
+    mode = alpha_cfg.get("mode", "disabled")
+    if mode == "disabled":
+        return None
+    name = str(alpha_cfg["parameter"])
+    raw_value = float(alpha_cfg["value"]) if mode == "fixed" else float(parameters[name])
+    return _physical_scale_value(raw_value, str(alpha_cfg["transform"]))
 
 
 def beta_mode_label(beta_config: Mapping[str, Any]) -> str:
@@ -258,6 +432,112 @@ def beta_mode_label(beta_config: Mapping[str, Any]) -> str:
     if mode == "fixed":
         return f"fixed {beta_config.get('parameter')}={float(beta_config.get('value')):.6g}"
     return str(mode)
+
+
+def alpha_mode_label(alpha_config: Mapping[str, Any]) -> str:
+    """Return a concise alpha-mode log label."""
+
+    mode = alpha_config.get("mode", "disabled")
+    if mode == "disabled":
+        return "disabled"
+    transform = alpha_config.get("transform")
+    if mode == "sampled":
+        return f"sampled {alpha_config.get('parameter')} ({transform})"
+    if mode == "fixed":
+        physical = _physical_scale_value(
+            float(alpha_config.get("value")),
+            str(transform),
+        )
+        return (
+            f"fixed {alpha_config.get('parameter')}={float(alpha_config.get('value')):.6g} "
+            f"({transform}, alpha={physical:.6g})"
+        )
+    return str(mode)
+
+
+def physical_scale_from_parameters(
+    parameters: Mapping[str, float],
+    scale_config: Mapping[str, Any],
+) -> float | None:
+    """Return physical alpha/beta from a parameter dictionary and mode config."""
+
+    mode = scale_config.get("mode", "disabled")
+    if mode == "disabled":
+        return None
+    name = str(scale_config["parameter"])
+    raw_value = float(scale_config["value"]) if mode == "fixed" else float(parameters[name])
+    return _physical_scale_value(raw_value, str(scale_config["transform"]))
+
+
+def physical_scale_posterior_summary(
+    samples: Any,
+    names: Sequence[str],
+    scale_config: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """Return posterior percentiles for a physical alpha/beta scale."""
+
+    import numpy as np
+
+    mode = scale_config.get("mode", "disabled")
+    if mode == "disabled":
+        return None
+    parameter = str(scale_config["parameter"])
+    transform = str(scale_config["transform"])
+    if mode == "fixed":
+        physical = _physical_scale_value(float(scale_config["value"]), transform)
+        return {
+            "parameter": parameter,
+            "transform": transform,
+            "median": physical,
+            "p16": physical,
+            "p84": physical,
+            "n_valid": 1,
+        }
+
+    if parameter not in names:
+        raise ValueError(f"Scale parameter {parameter!r} is missing from sampled names.")
+    array = np.asarray(samples, dtype=float)
+    if array.size == 0:
+        return {
+            "parameter": parameter,
+            "transform": transform,
+            "median": None,
+            "p16": None,
+            "p84": None,
+            "n_valid": 0,
+        }
+    if array.ndim == 1:
+        array = array.reshape(1, -1)
+    raw = array[:, list(names).index(parameter)]
+    finite = np.isfinite(raw)
+    raw = raw[finite]
+    if transform == "pow10":
+        physical = np.power(10.0, raw)
+    elif transform == "exp":
+        physical = np.exp(raw)
+    elif transform == "identity":
+        physical = raw
+    else:
+        raise ValueError(f"Unknown canonical scale transform {transform!r}.")
+    physical = physical[np.isfinite(physical) & (physical > 0)]
+    if physical.size == 0:
+        return {
+            "parameter": parameter,
+            "transform": transform,
+            "median": None,
+            "p16": None,
+            "p84": None,
+            "n_valid": 0,
+        }
+    p16, median, p84 = np.nanpercentile(physical, [16.0, 50.0, 84.0])
+    return {
+        "parameter": parameter,
+        "transform": transform,
+        "median": float(median),
+        "p16": float(p16),
+        "p84": float(p84),
+        "n_valid": int(physical.size),
+    }
 
 
 def validate_beta_configuration(names: Sequence[str], objective: str, retrieval_config: Mapping[str, Any] | None = None) -> None:
@@ -387,6 +667,7 @@ def log_likelihood_from_state(theta: Any) -> float:
             Kp=parameters["Kp"],
             Vsys=float(parameters.get("Vsys", 0.0)),
             objective=state["objective"],
+            alpha=alpha_from_state(parameters, state),
             beta=beta_from_state(parameters, state),
             velocity_offsets_by_night=velocity_offsets_from_parameters(
                 parameters,

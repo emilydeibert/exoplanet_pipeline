@@ -553,6 +553,124 @@ beta/noise-scale parameters cautiously for matched-filter HRCCS likelihoods
 unless the objective normalization is scientifically well-defined. Beta is not
 implemented for the `ccf_peak_value` debug objective.
 
+`log_alpha` is log10 of a positive model-amplitude scale. Enable it explicitly:
+
+```yaml
+alpha_mode:
+  mode: sampled
+  parameter: log_alpha
+  transform: pow10
+```
+
+When alpha is disabled, the historical analytically optimized matched-filter
+objective is unchanged. When enabled, the final processed model used by the
+likelihood is scaled without analytically optimizing alpha:
+
+```text
+chi2(alpha) = D - 2 alpha C + alpha^2 M
+```
+
+Beta is applied to this chi-square afterward using the existing beta
+convention. Summary JSON records the sampled scale settings, best physical
+alpha/beta values, and physical posterior percentiles.
+
+## Per-Block SYSREM
+
+Red+blue retrievals can provide a strict night+camera SYSREM map:
+
+```bash
+--k-per-block 20240528:red:4 20240528:blue:6 \
+              20240702:red:4 20240702:blue:5 \
+              20241002:red:3 20241002:blue:3
+```
+
+When supplied, every selected night+camera block must appear in the map.
+Per-block values take precedence over `--k` and `--k-per-night`. When
+`--k-per-block` is absent, existing global and per-night behavior is unchanged.
+The resolved values are saved under `sysrem_iterations_by_block`.
+
+Order selections use block, camera, then global precedence:
+
+```bash
+--orders-per-camera red:2-32 blue:0-26
+```
+
+The more general block form is also supported:
+
+```bash
+--orders-per-block 20240528:red:2-32 20240528:blue:0-26
+```
+
+Order expressions accept comma-separated integers and inclusive ranges, such
+as `red:2,3,4,10-15`. Resolved original order indices are saved under
+`orders_by_block` and remain present in each `data.blocks` entry.
+
+Fe-only red+blue smoke using the existing global order selection:
+
+```bash
+python -m retrieval.hrccs_retrieval.run_fe_emcee \
+  /home/edeibert/projects/def-ldang05/edeibert/mascara1b \
+  --retrieval-config retrieval/configs/mascara1b_fe_twopointTP_deltaP_nobeta_continuum_jointredblue_pernightV.yaml \
+  --k-per-block 20240528:red:4 20240528:blue:6 20240702:red:4 20240702:blue:5 20241002:red:3 20241002:blue:3 \
+  --nights 20240528 20240702 20241002 \
+  --cameras red blue \
+  --orders 2 \
+  --objective matched_filter_loglike \
+  --n-walkers 32 \
+  --n-steps 5 \
+  --burn-in 0 \
+  --thin 1 \
+  --n-jobs 1 \
+  --seed 123 \
+  --overwrite \
+  --progress \
+  --output retrieval/results/hrccs_emcee_redblue_fe_perblockk_smoke
+```
+
+Fe-only red+blue with full per-camera order sets:
+
+```bash
+python -m retrieval.hrccs_retrieval.run_fe_emcee \
+  /home/edeibert/projects/def-ldang05/edeibert/mascara1b \
+  --retrieval-config retrieval/configs/mascara1b_fe_twopointTP_deltaP_nobeta_continuum_jointredblue_pernightV.yaml \
+  --k-per-block 20240528:red:4 20240528:blue:6 20240702:red:4 20240702:blue:5 20241002:red:3 20241002:blue:3 \
+  --nights 20240528 20240702 20241002 \
+  --cameras red blue \
+  --orders-per-camera red:2-32 blue:0-26 \
+  --objective matched_filter_loglike \
+  --n-walkers 32 \
+  --n-steps 5 \
+  --burn-in 0 \
+  --thin 1 \
+  --n-jobs 1 \
+  --seed 123 \
+  --overwrite \
+  --progress \
+  --output retrieval/results/hrccs_emcee_redblue_fe_percamera_orders_smoke
+```
+
+Fe+Ti+Cr alpha/beta red+blue with per-block k and per-camera orders:
+
+```bash
+python -m retrieval.hrccs_retrieval.run_fe_emcee \
+  /home/edeibert/projects/def-ldang05/edeibert/mascara1b \
+  --retrieval-config retrieval/configs/mascara1b_feTiCr_twopointTP_deltaP_alphabeta_continuum_jointredblue_pernightV.yaml \
+  --k-per-block 20240528:red:4 20240528:blue:6 20240702:red:4 20240702:blue:5 20241002:red:3 20241002:blue:3 \
+  --nights 20240528 20240702 20241002 \
+  --cameras red blue \
+  --orders-per-camera red:2-32 blue:0-26 \
+  --objective matched_filter_loglike \
+  --n-walkers 32 \
+  --n-steps 5 \
+  --burn-in 0 \
+  --thin 1 \
+  --n-jobs 1 \
+  --seed 123 \
+  --overwrite \
+  --progress \
+  --output retrieval/results/hrccs_emcee_redblue_feTiCr_alphabeta_perblockk_smoke
+```
+
 ## Continuum Contributors
 
 Continuum/background opacity is YAML-controlled and defaults to empty, matching

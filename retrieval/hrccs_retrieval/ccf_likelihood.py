@@ -574,6 +574,7 @@ def evaluate_objective(
     objective: str = "matched_filter_loglike",
     beta: Optional[float] = None,
     velocity_offsets_by_night: Optional[Mapping[str, float]] = None,
+    alpha: Optional[float] = None,
 ) -> dict[str, Any]:
     """Evaluate the configured HRCCS objective at one parameter point."""
 
@@ -586,25 +587,44 @@ def evaluate_objective(
             Vsys=Vsys,
             velocity_offsets_by_night=velocity_offsets_by_night,
         )
+        if alpha is None:
+            chi2 = float(terms["chi2_best"])
+        else:
+            np = require_numpy()
+            alpha = float(alpha)
+            if alpha <= 0 or not np.isfinite(alpha):
+                raise ValueError(f"alpha must be finite and positive; got {alpha}.")
+            # Alpha scales the final model vector used by the matched filter.
+            # Unlike the historical objective, it is not optimized
+            # analytically: chi2(alpha) = D - 2 alpha C + alpha^2 M.
+            chi2 = (
+                float(terms["data_power"])
+                - 2.0 * alpha * float(terms["data_model"])
+                + alpha * alpha * float(terms["model_power"])
+            )
+            terms["chi2_alpha"] = float(chi2)
+            terms["log_likelihood_alpha"] = float(-0.5 * chi2)
+
         if beta is None:
-            value = terms["log_likelihood"]
+            value = terms["log_likelihood"] if alpha is None else -0.5 * chi2
         else:
             np = require_numpy()
             beta = float(beta)
             if beta <= 0 or not np.isfinite(beta):
                 raise ValueError(f"beta must be finite and positive; got {beta}.")
-            # Current log_likelihood is -0.5*chi2_best up to constants.  If
-            # sigma -> beta*sigma, chi2 scales as beta^-2 and the beta-dependent
-            # Gaussian normalization contributes -N log(beta).  At beta=1 this
-            # preserves the exact historical objective value.
-            value = -0.5 * float(terms["chi2_best"]) / (beta * beta)
+            # The selected chi2 is either the historical analytically optimized
+            # value or chi2(alpha). If sigma -> beta*sigma, chi2 scales as
+            # beta^-2 and the beta-dependent Gaussian normalization contributes
+            # -N log(beta). At beta=1 this preserves the corresponding
+            # alpha-disabled or alpha-enabled objective.
+            value = -0.5 * chi2 / (beta * beta)
             value -= int(terms["n_valid"]) * float(np.log(beta))
     elif objective == MATCHED_FILTER_ZERO_MEAN_MODEL:
-        if beta is not None:
+        if alpha is not None or beta is not None:
             raise NotImplementedError(
-                "beta/log_beta is only implemented for the original "
+                "alpha and beta are only implemented for the original "
                 "matched_filter_loglike objective. The zero-mean model variant "
-                "has no beta treatment yet."
+                "has no alpha/beta treatment yet."
             )
         terms = baseline_safe_matched_filter_terms(
             blocks,
@@ -617,11 +637,11 @@ def evaluate_objective(
         )
         value = terms["log_likelihood"]
     elif objective == MATCHED_FILTER_ZERO_MEAN_DATA_MODEL:
-        if beta is not None:
+        if alpha is not None or beta is not None:
             raise NotImplementedError(
-                "beta/log_beta is only implemented for the original "
+                "alpha and beta are only implemented for the original "
                 "matched_filter_loglike objective. The zero-mean data/model "
-                "variant has no beta treatment yet."
+                "variant has no alpha/beta treatment yet."
             )
         terms = baseline_safe_matched_filter_terms(
             blocks,
@@ -634,11 +654,11 @@ def evaluate_objective(
         )
         value = terms["log_likelihood"]
     elif objective == MATCHED_FILTER_NORMALIZED_CCF:
-        if beta is not None:
+        if alpha is not None or beta is not None:
             raise NotImplementedError(
-                "beta/log_beta is only implemented for the original "
+                "alpha and beta are only implemented for the original "
                 "matched_filter_loglike objective. The normalized CCF debug "
-                "objective has no Gaussian variance normalization."
+                "objective has no alpha/beta treatment."
             )
         terms = baseline_safe_matched_filter_terms(
             blocks,
@@ -660,9 +680,9 @@ def evaluate_objective(
             Vsys=Vsys,
             velocity_offsets_by_night=velocity_offsets_by_night,
         )
-        if beta is not None:
+        if alpha is not None or beta is not None:
             raise NotImplementedError(
-                "beta/log_beta is only implemented for matched_filter_loglike. "
+                "alpha and beta are only implemented for matched_filter_loglike. "
                 "The ccf_peak_value debug objective has no meaningful variance "
                 "normalization."
             )
@@ -681,6 +701,8 @@ def evaluate_objective(
         out["velocity_offsets_by_night"] = {
             str(key): float(value) for key, value in velocity_offsets_by_night.items()
         }
+    if alpha is not None:
+        out["alpha"] = float(alpha)
     if beta is not None:
         out["beta"] = float(beta)
     return out

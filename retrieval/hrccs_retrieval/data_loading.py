@@ -108,12 +108,116 @@ def split_cli_list(value: Optional[Any]) -> Optional[list[str]]:
 
 
 def parse_int_list(value: Optional[Any]) -> Optional[list[int]]:
-    """Parse comma/semicolon-separated integer order lists."""
+    """Parse integer order lists, including inclusive ranges such as ``2-10``."""
 
     pieces = split_cli_list(value)
     if pieces is None:
         return None
-    return [int(piece) for piece in pieces]
+    return parse_order_expression(",".join(pieces))
+
+
+def parse_order_expression(value: str) -> list[int]:
+    """Parse a comma-separated order expression with inclusive ranges."""
+
+    raw = str(value).strip()
+    if not raw:
+        raise ValueError("Order specification cannot be empty.")
+
+    orders: list[int] = []
+    seen: set[int] = set()
+    for token in raw.split(","):
+        token = token.strip()
+        if not token:
+            raise ValueError(f"Invalid empty item in order specification {value!r}.")
+        if "-" in token:
+            parts = token.split("-")
+            if len(parts) != 2 or not parts[0].strip() or not parts[1].strip():
+                raise ValueError(
+                    f"Invalid order range {token!r}; use an inclusive range such as 2-32."
+                )
+            try:
+                start = int(parts[0])
+                stop = int(parts[1])
+            except ValueError as exc:
+                raise ValueError(f"Order range endpoints must be integers; got {token!r}.") from exc
+            if start < 0 or stop < 0:
+                raise ValueError(f"Order indices must be non-negative; got {token!r}.")
+            if stop < start:
+                raise ValueError(f"Order range must satisfy start <= stop; got {token!r}.")
+            expanded = range(start, stop + 1)
+        else:
+            try:
+                order = int(token)
+            except ValueError as exc:
+                raise ValueError(f"Order index must be an integer; got {token!r}.") from exc
+            if order < 0:
+                raise ValueError(f"Order indices must be non-negative; got {order}.")
+            expanded = [order]
+
+        for order in expanded:
+            if order not in seen:
+                orders.append(int(order))
+                seen.add(int(order))
+
+    if not orders:
+        raise ValueError(f"Order specification {value!r} did not contain any orders.")
+    return orders
+
+
+def _mapping_cli_items(value: Optional[Any]) -> list[str]:
+    """Return mapping CLI entries without splitting commas inside order lists."""
+
+    if value is None or value == "":
+        return []
+    raw_items = value if isinstance(value, (list, tuple)) else [value]
+    items: list[str] = []
+    for raw_item in raw_items:
+        for item in str(raw_item).split(";"):
+            item = item.strip()
+            if item:
+                items.append(item)
+    return items
+
+
+def parse_orders_per_camera(value: Optional[Any]) -> dict[str, list[int]]:
+    """Parse ``CAMERA:ORDER_SPEC`` entries for ``--orders-per-camera``."""
+
+    parsed: dict[str, list[int]] = {}
+    for item in _mapping_cli_items(value):
+        if ":" not in item:
+            raise ValueError(
+                "--orders-per-camera entries must have the form CAMERA:ORDERS, "
+                f"for example red:2-32; got {item!r}."
+            )
+        camera, order_spec = item.split(":", 1)
+        camera = camera.strip().lower()
+        if not camera:
+            raise ValueError(f"Camera name cannot be empty in {item!r}.")
+        orders = parse_order_expression(order_spec)
+        if camera in parsed and parsed[camera] != orders:
+            raise ValueError(f"Conflicting order selections for camera {camera!r}.")
+        parsed[camera] = orders
+    return parsed
+
+
+def parse_orders_per_block(value: Optional[Any]) -> dict[str, list[int]]:
+    """Parse ``NIGHT:CAMERA:ORDER_SPEC`` entries for per-block orders."""
+
+    parsed: dict[str, list[int]] = {}
+    for item in _mapping_cli_items(value):
+        parts = item.split(":", 2)
+        if len(parts) != 3 or not parts[0].strip() or not parts[1].strip():
+            raise ValueError(
+                "--orders-per-block entries must have the form NIGHT:CAMERA:ORDERS, "
+                f"for example 20240528:red:2-32; got {item!r}."
+            )
+        night, camera, order_spec = parts
+        key = sysrem_block_key(night, camera)
+        orders = parse_order_expression(order_spec)
+        if key in parsed and parsed[key] != orders:
+            raise ValueError(f"Conflicting order selections for block {key!r}.")
+        parsed[key] = orders
+    return parsed
 
 
 def parse_k_per_night(value: Optional[Any]) -> dict[str, int]:
@@ -152,6 +256,43 @@ def parse_k_per_night(value: Optional[Any]) -> dict[str, int]:
     return parsed
 
 
+def sysrem_block_key(night: str, camera: str) -> str:
+    """Return the canonical key used for per-night-per-camera SYSREM maps."""
+
+    return f"{str(night).strip()}:{str(camera).strip().lower()}"
+
+
+def parse_k_per_block(value: Optional[Any]) -> dict[str, int]:
+    """Parse ``--k-per-block`` entries of the form ``NIGHT:CAMERA:K``."""
+
+    pieces = split_cli_list(value)
+    if pieces is None:
+        return {}
+
+    parsed: dict[str, int] = {}
+    for piece in pieces:
+        parts = [part.strip() for part in piece.split(":")]
+        if len(parts) != 3 or not parts[0] or not parts[1] or not parts[2]:
+            raise ValueError(
+                "--k-per-block entries must have the form NIGHT:CAMERA:K, "
+                f"for example 20240528:red:4; got {piece!r}."
+            )
+        night, camera, raw_k = parts
+        try:
+            k = int(raw_k)
+        except ValueError as exc:
+            raise ValueError(
+                f"SYSREM k for block {night}:{camera} must be an integer; got {raw_k!r}."
+            ) from exc
+        if k < 1:
+            raise ValueError(f"SYSREM k for block {night}:{camera} must be >= 1; got {k}.")
+        key = sysrem_block_key(night, camera)
+        if key in parsed and parsed[key] != k:
+            raise ValueError(f"Conflicting SYSREM k values for block {key!r}: {parsed[key]} and {k}.")
+        parsed[key] = k
+    return parsed
+
+
 def resolve_sysrem_iteration_for_night(
     night: str,
     global_k: Optional[int],
@@ -172,6 +313,63 @@ def resolve_sysrem_iteration_for_night(
         f"No SYSREM iteration was provided for selected night {night_key!r}. "
         "Use --k for a global fallback or --k-per-night NIGHT:K."
     )
+
+
+def resolve_sysrem_iteration_for_block(
+    night: str,
+    camera: str,
+    global_k: Optional[int],
+    k_per_night: Optional[Mapping[str, int]] = None,
+    k_per_block: Optional[Mapping[str, int]] = None,
+) -> int:
+    """Resolve k for one block, with strict per-block precedence."""
+
+    if k_per_block is not None:
+        key = sysrem_block_key(night, camera)
+        block_map = {str(map_key): int(value) for map_key, value in k_per_block.items()}
+        if key not in block_map:
+            raise ValueError(
+                f"No SYSREM iteration was provided for selected block {key!r}. "
+                "When --k-per-block is supplied, every selected night+camera "
+                "block must be listed explicitly."
+            )
+        return int(block_map[key])
+    return resolve_sysrem_iteration_for_night(night, global_k, k_per_night)
+
+
+def resolve_orders_for_block(
+    night: str,
+    camera: str,
+    global_orders: Optional[Sequence[int]],
+    orders_per_camera: Optional[Mapping[str, Sequence[int]]] = None,
+    orders_per_block: Optional[Mapping[str, Sequence[int]]] = None,
+) -> tuple[Optional[list[int]], str]:
+    """Resolve orders with block, camera, then global precedence."""
+
+    block_key = sysrem_block_key(night, camera)
+    block_map = {
+        str(key): [int(order) for order in value]
+        for key, value in dict(orders_per_block or {}).items()
+    }
+    camera_map = {
+        str(key).strip().lower(): [int(order) for order in value]
+        for key, value in dict(orders_per_camera or {}).items()
+    }
+    camera_key = str(camera).strip().lower()
+
+    if block_key in block_map:
+        return list(block_map[block_key]), "orders_per_block"
+    if camera_key in camera_map:
+        return list(camera_map[camera_key]), "orders_per_camera"
+    if global_orders is not None:
+        return [int(order) for order in global_orders], "orders"
+    if orders_per_block is not None or orders_per_camera is not None:
+        raise ValueError(
+            f"No order selection was resolved for selected block {block_key!r}. "
+            "Provide --orders-per-block for that block, --orders-per-camera for "
+            f"camera {camera_key!r}, or a global --orders fallback."
+        )
+    return None, "automatic_model_overlap"
 
 
 def get_nights_cameras(config: Any, nights: Optional[Sequence[str]], cameras: Optional[Sequence[str]]) -> tuple[list[str], list[str]]:
@@ -320,6 +518,9 @@ def load_hrccs_data(
     orders: Optional[Sequence[int]] = None,
     order_threshold: float = 1.0e-6,
     logger: Optional[logging.Logger] = None,
+    k_per_block: Optional[Mapping[str, int]] = None,
+    orders_per_camera: Optional[Mapping[str, Sequence[int]]] = None,
+    orders_per_block: Optional[Mapping[str, Sequence[int]]] = None,
 ) -> list[ObservationBlock]:
     """Load all requested night/camera blocks once for repeated model evaluation."""
 
@@ -328,28 +529,97 @@ def load_hrccs_data(
         logger.info("Selected nights: %s", selected_nights)
         logger.info("Selected cameras: %s", selected_cameras)
         logger.info(
-            "SYSREM selection: global k=%s, k_per_night=%s",
+            "SYSREM selection: global k=%s, k_per_night=%s, k_per_block=%s",
             None if k is None else int(k),
             {str(key): int(value) for key, value in dict(k_per_night or {}).items()},
+            None
+            if k_per_block is None
+            else {str(key): int(value) for key, value in dict(k_per_block).items()},
         )
+        logger.info(
+            "Order selection: global=%s, per_camera=%s, per_block=%s",
+            None if orders is None else [int(order) for order in orders],
+            None
+            if orders_per_camera is None
+            else {
+                str(key): [int(order) for order in value]
+                for key, value in orders_per_camera.items()
+            },
+            None
+            if orders_per_block is None
+            else {
+                str(key): [int(order) for order in value]
+                for key, value in orders_per_block.items()
+            },
+        )
+
+    resolved_orders: dict[str, tuple[Optional[list[int]], str]] = {}
+    for night in selected_nights:
+        for camera in selected_cameras:
+            key = sysrem_block_key(str(night), str(camera))
+            resolved_orders[key] = resolve_orders_for_block(
+                str(night),
+                str(camera),
+                orders,
+                orders_per_camera,
+                orders_per_block,
+            )
+
     blocks: list[ObservationBlock] = []
     for night in selected_nights:
-        night_k = resolve_sysrem_iteration_for_night(str(night), k, k_per_night)
         for camera in selected_cameras:
+            key = sysrem_block_key(str(night), str(camera))
+            block_orders, order_source = resolved_orders[key]
+            block_k = resolve_sysrem_iteration_for_block(
+                str(night),
+                str(camera),
+                k,
+                k_per_night,
+                k_per_block,
+            )
+            if logger is not None:
+                logger.info(
+                    "Resolved orders for %s: %s (source=%s)",
+                    key,
+                    block_orders if block_orders is not None else "automatic model overlap",
+                    order_source,
+                )
             blocks.append(
                 load_one_night_camera(
                     config=config,
                     params=params,
                     night=str(night),
                     camera=str(camera),
-                    k=int(night_k),
+                    k=int(block_k),
                     model_array=model_array,
-                    orders=orders,
+                    orders=block_orders,
                     order_threshold=order_threshold,
                     logger=logger,
                 )
             )
     return blocks
+
+
+def orders_by_block(blocks: Sequence[ObservationBlock]) -> dict[str, list[int]]:
+    """Return actual selected original order indices for every data block."""
+
+    return {
+        sysrem_block_key(block.night, block.camera): [int(order) for order in block.orders]
+        for block in blocks
+    }
+
+
+def sysrem_iterations_by_block(blocks: Sequence[ObservationBlock]) -> dict[str, int]:
+    """Return the resolved SYSREM iteration for every night+camera block."""
+
+    by_block: dict[str, int] = {}
+    for block in blocks:
+        key = sysrem_block_key(block.night, block.camera)
+        k = int(block.sysrem_iteration)
+        if key in by_block and by_block[key] != k:
+            raise ValueError(f"Conflicting SYSREM iterations for block {key!r}: {by_block[key]} and {k}.")
+        by_block[key] = k
+    return by_block
 
 
 def sysrem_iterations_by_night(blocks: Sequence[ObservationBlock]) -> dict[str, int]:
