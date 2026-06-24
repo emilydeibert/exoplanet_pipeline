@@ -333,6 +333,18 @@ def save_corner_plot(path: Path, samples: Any, names: list[str], logger: Any) ->
         return False
 
 
+
+def parameters_with_updates(initial, updates):
+    """Return a parameter dictionary with sampled values overlaid on initials.
+
+    Used for post-processing diagnostic plots where fixed/non-sampled
+    parameters still need to be present.
+    """
+    params = dict(initial)
+    params.update(updates)
+    return params
+
+
 def save_temperature_pressure_plot(
     path: Path,
     samples: Any,
