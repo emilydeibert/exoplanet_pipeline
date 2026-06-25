@@ -51,7 +51,7 @@ parser.add_argument(
 
 parser.add_argument(
     "--save-output",
-    default=False,
+    default=True,
 )
 
 # parser.add_argument(
@@ -80,7 +80,7 @@ params_spec.loader.exec_module(params)
 
 def load_and_combine_maps(
     model,
-    iters,
+    #iters,
     nights,
     cameras,
     orders=None):
@@ -90,6 +90,8 @@ def load_and_combine_maps(
     for camera in cameras:
 
         for night in nights:
+
+            iters = config.optimumSysremIters[f"{night}_{camera}"]
 
             filename = (
                 f"{config.path2reduced}/results/"
