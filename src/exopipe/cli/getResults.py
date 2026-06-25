@@ -112,11 +112,13 @@ def load_and_combine_maps(
                 #order_sum = np.nansum(fmap, axis=0)
                 orders_to_correlate = data['orders']
                 allOrders = cameraDict['orders']
-                if orders_to_correlate == allOrders:
+                if np.array_equal(orders_to_correlate, allOrders):
                     goodOrders = cameraDict['goodOrders']
+                    print(goodOrders)
                     order_sum = np.nansum(fmap[cameraDict["goodOrders"]], axis=0)
                 else:
                     order_sum = np.nansum(fmap, axis=0)
+                    print(orders_to_correlate)
 
             else:
                 order_sum = np.nansum(fmap[orders], axis=0)
