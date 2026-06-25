@@ -80,20 +80,20 @@ params_spec.loader.exec_module(params)
 
 def load_and_combine_maps(
     model,
-    #iters,
     nights,
     cameras,
-    orders=None):
-
+    orders=None,
+):
     combined_maps = []
 
     for camera in cameras:
 
-        #cameraDict = config.redCameraDict if camera == 'red' else config.blueCameraDict
-        if camera == 'red':
+        if camera == "red":
             cameraDict = config.redCameraDict
-        elif camera == 'blue':
+        elif camera == "blue":
             cameraDict = config.blueCameraDict
+        else:
+            raise ValueError(f"Unknown camera: {camera}")
 
         for night in nights:
 
@@ -108,13 +108,45 @@ def load_and_combine_maps(
 
             fmap = data["fmap"]
 
-            if orders is None:
-                #order_sum = np.nansum(fmap, axis=0)
-                order_sum = np.nansum(fmap[cameraDict["goodOrders"]], axis=0)
-
+            # These are the original order numbers represented by fmap rows.
+            # For species like Fe, this may be all orders.
+            # For species like Al, this may be only selected orders, e.g. [0, 5, 13].
+            if "orders" in data.files:
+                file_orders = np.asarray(data["orders"], dtype=int)
             else:
-                order_sum = np.nansum(fmap[orders], axis=0)
+                # Backward-compatible fallback: assume fmap rows correspond directly
+                # to original order numbers 0, 1, 2, ...
+                file_orders = np.arange(fmap.shape[0], dtype=int)
 
+            if fmap.shape[0] != len(file_orders):
+                raise ValueError(
+                    f"Order mapping mismatch for {filename}: "
+                    f"fmap has {fmap.shape[0]} order rows but "
+                    f"data['orders'] has length {len(file_orders)}"
+                )
+
+            if orders is None:
+                desired_orders = np.asarray(cameraDict["goodOrders"], dtype=int)
+            else:
+                desired_orders = np.asarray(orders, dtype=int)
+
+            # Convert desired original order numbers into fmap row indices.
+            keep_idx = np.where(np.isin(file_orders, desired_orders))[0]
+
+            if len(keep_idx) == 0:
+                raise ValueError(
+                    f"No overlapping orders for {night} {camera} {model}. "
+                    f"File orders: {file_orders.tolist()} | "
+                    f"Desired orders: {desired_orders.tolist()}"
+                )
+
+            selected_original_orders = file_orders[keep_idx]
+            print(
+                f"{night} {camera} {model}: summing fmap rows {keep_idx.tolist()} "
+                f"corresponding to original orders {selected_original_orders.tolist()}"
+            )
+
+            order_sum = np.nansum(fmap[keep_idx], axis=0)
             order_sum *= -1.0
 
             combined_maps.append(order_sum)
