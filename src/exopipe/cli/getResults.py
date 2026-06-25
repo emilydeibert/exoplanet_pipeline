@@ -313,7 +313,7 @@ def main():
 
     combined_map = load_and_combine_maps(
         model=args.model,
-        iters=args.iters,
+        #iters=args.iters,
         nights=nights,
         cameras=cameras,
         orders=args.orders,
