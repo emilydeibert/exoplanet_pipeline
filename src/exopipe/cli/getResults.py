@@ -89,6 +89,8 @@ def load_and_combine_maps(
 
     for camera in cameras:
 
+        cameraDict = config.redCameraDict if camera == 'red' else config.blueCameraDict
+
         for night in nights:
 
             iters = config.optimumSysremIters[f"{night}_{camera}"]
@@ -103,7 +105,9 @@ def load_and_combine_maps(
             fmap = data["fmap"]
 
             if orders is None:
-                order_sum = np.nansum(fmap, axis=0)
+                #order_sum = np.nansum(fmap, axis=0)
+                order_sum = np.nansum(fmap[cameraDict.goodOrders], axis=0)
+
             else:
                 order_sum = np.nansum(fmap[orders], axis=0)
 
@@ -297,8 +301,8 @@ def main():
     RV_MIN = config.RV_MIN if hasattr(config, "RV_MIN") else -75
     RV_MAX = config.RV_MAX if hasattr(config, "RV_MAX") else 75
 
-    KP_MIN = config.KP_MIN if hasattr(config, "KP_MIN") else 1
-    KP_MAX = config.KP_MAX if hasattr(config, "KP_MAX") else 300
+    KP_MIN = config.KP_MIN if hasattr(config, "KP_MIN") else 50
+    KP_MAX = config.KP_MAX if hasattr(config, "KP_MAX") else 275
 
 
     rv_mask = (RV >= RV_MIN) & (RV <= RV_MAX)
