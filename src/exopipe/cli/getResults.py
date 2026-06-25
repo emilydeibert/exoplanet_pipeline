@@ -19,7 +19,7 @@ parser.add_argument(
 parser.add_argument(
     "--iters",
     type=int,
-    required=True,
+    required=False,
 )
 
 parser.add_argument(
