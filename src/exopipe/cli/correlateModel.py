@@ -47,6 +47,7 @@ if __name__ == '__main__':
 	parser.add_argument("--sysrem-mode", default="full")  # full | single | list
 	parser.add_argument("--k", type=int, default=15)       # used for full/single
 	parser.add_argument("--ks", type=str, default=None)    # e.g. "1,3,5,10"
+	parser.add_argument("--model", type=str, nargs="+", default=None)
 
 	args = parser.parse_args()
 
@@ -76,7 +77,7 @@ if __name__ == '__main__':
 
 	RV = config.RV 
 	Kp = config.Kp 
-	models = config.models
+	models = args.model if args.model is not None else config.models
 	nights = config.nights
 
 	for model in models:
@@ -158,4 +159,3 @@ if __name__ == '__main__':
 						)
 
 	main()
-
