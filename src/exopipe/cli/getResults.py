@@ -89,7 +89,11 @@ def load_and_combine_maps(
 
     for camera in cameras:
 
-        cameraDict = config.redCameraDict if camera == 'red' else config.blueCameraDict
+        #cameraDict = config.redCameraDict if camera == 'red' else config.blueCameraDict
+        if camera == 'red':
+            cameraDict = config.redCameraDict
+        elif camera == 'blue':
+            cameraDict = config.blueCameraDict
 
         for night in nights:
 
@@ -106,7 +110,7 @@ def load_and_combine_maps(
 
             if orders is None:
                 #order_sum = np.nansum(fmap, axis=0)
-                order_sum = np.nansum(fmap[cameraDict.goodOrders], axis=0)
+                order_sum = np.nansum(fmap[cameraDict[goodOrders]], axis=0)
 
             else:
                 order_sum = np.nansum(fmap[orders], axis=0)
