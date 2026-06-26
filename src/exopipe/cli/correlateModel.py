@@ -45,8 +45,11 @@ if __name__ == '__main__':
 	parser = argparse.ArgumentParser()
 	parser.add_argument("project_path", type=str)
 	parser.add_argument("--sysrem-mode", default="full")  # full | single | list
-	parser.add_argument("--k", type=int, default=15)       # used for full/single
+	parser.add_argument("--k", type=int, default=15)	   # used for full/single
 	parser.add_argument("--ks", type=str, default=None)    # e.g. "1,3,5,10"
+	parser.add_argument("--model", type=str, nargs='+') # e.g. ["Fe"] or ["Fe", "Mg"], etc.
+	parser.add_argument("--night", type=str, nargs='+') # e.g. ["20240528"]
+	parser.add_argument("--camera", type=str, nargs='+') # e.g. ["blue"]
 
 	args = parser.parse_args()
 
@@ -76,8 +79,11 @@ if __name__ == '__main__':
 
 	RV = config.RV 
 	Kp = config.Kp 
-	models = config.models
-	nights = config.nights
+	#models = config.models
+	#nights = config.nights
+	models = args.model
+	nights = args.night
+	cameras = args.camera
 
 	for model in models:
 
@@ -100,9 +106,9 @@ if __name__ == '__main__':
 				print(camera)
 
 				# if camera == 'red':
-				# 	cameraDict = config.redCameraDict
+				#	cameraDict = config.redCameraDict
 				# elif camera == 'blue':
-				# 	cameraDict = config.blueCameraDict
+				#	cameraDict = config.blueCameraDict
 
 				sysr_array = np.load(f"{config.path2reduced}/{night}_{camera}_sysrem.npz")
 				data_array = np.load(f"{config.path2reduced}/{night}_{camera}_analysis_ready.npz")
@@ -133,9 +139,9 @@ if __name__ == '__main__':
 
 						# per order correlation
 						cmap = cc.modelCorrelation_weighted(
-						order_data=sysr_rest[order, :, :],             # (n_exp, n_pix)
-						order_wave=wave[order, 0, :],                  # (n_pix,)
-						order_sigmag=error_rest[order, :, :],          # (n_exp, n_pix)
+						order_data=sysr_rest[order, :, :],			   # (n_exp, n_pix)
+						order_wave=wave[order, 0, :],				   # (n_pix,)
+						order_sigmag=error_rest[order, :, :],		   # (n_exp, n_pix)
 						RV=RV,
 						wavMinMax=[np.nanmin(wave[order,0,:]), np.nanmax(wave[order,0,:])],
 						F_model=F_model
