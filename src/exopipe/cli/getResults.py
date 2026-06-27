@@ -1,5 +1,4 @@
 from astropy.stats import sigma_clip
-from scipy.optimize import curve_fit
 import matplotlib.pyplot as plt
 from pathlib import Path
 import importlib.util
@@ -437,49 +436,6 @@ def plot_detection(
 
     plt.show()
 
-def gaussian_with_offset(x, amp, mu, sigma, offset):
-    return offset + amp * np.exp(-0.5 * ((x - mu) / sigma) ** 2)
-
-
-def fit_gaussian_peak_1d(x, y, peak_x, half_width):
-    fit_mask = np.abs(x - peak_x) <= half_width
-
-    x_fit = np.asarray(x[fit_mask], dtype=float)
-    y_fit = np.asarray(y[fit_mask], dtype=float)
-
-    amp0 = np.nanmax(y_fit) - np.nanmedian(y_fit)
-    mu0 = peak_x
-    sigma0 = half_width / 2.0
-    offset0 = np.nanmedian(y_fit)
-
-    p0 = [amp0, mu0, sigma0, offset0]
-
-    bounds = (
-        [0.0, peak_x - half_width, 0.1, -np.inf],
-        [np.inf, peak_x + half_width, half_width * 2.0, np.inf],
-    )
-
-    popt, pcov = curve_fit(
-        gaussian_with_offset,
-        x_fit,
-        y_fit,
-        p0=p0,
-        bounds=bounds,
-        maxfev=10000,
-    )
-
-    amp, mu, sigma, offset = popt
-    perr = np.sqrt(np.diag(pcov))
-
-    return {
-        "amp": float(amp),
-        "mu": float(mu),
-        "sigma": float(abs(sigma)),
-        "offset": float(offset),
-        "mu_err": float(perr[1]),
-        "sigma_err": float(perr[2]),
-    }
-
 
 # def save_results(
 #     filename,
@@ -750,23 +706,6 @@ def main():
         local_peak = peaks["clip_local"]
         plot_suffix = "sigma-clipped SNR"
 
-    rv_slice = snr_map[peak["kp_idx"], :]
-    kp_slice = snr_map[:, peak["rv_idx"]]
-
-    rv_fit = fit_gaussian_peak_1d(
-        RV,
-        rv_slice,
-        peak_x=peak["rv"],
-        half_width=15.0,
-    )
-
-    kp_fit = fit_gaussian_peak_1d(
-        Kp,
-        kp_slice,
-        peak_x=peak["kp"],
-        half_width=30.0,
-    )
-
     # print()
     # print("=" * 40)
     # print("Detection Summary")
@@ -805,8 +744,6 @@ def main():
 
     print("=" * 40)
     print()
-    print(kp_fit)
-    print(rv_fit)
 
     if args.save_output:
 
