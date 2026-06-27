@@ -627,84 +627,84 @@ def main():
     #     RV_crop,
     #     Kp_crop,
     # )
-combined_map_crop = combined_map[kp_mask][:, rv_mask]
+    combined_map_crop = combined_map[kp_mask][:, rv_mask]
 
-snr_map_clip, noise_clip = calculate_snr_map(
-    combined_map_crop,
-    sigma_cut=args.sigma_cut,
-)
-
-snr_map_outside_box = None
-noise_outside_box = None
-
-peaks = {
-    "clip_global": find_peak(
-        snr_map_clip,
-        RV_crop,
-        Kp_crop,
-    )
-}
-
-noises = {
-    "clip": float(noise_clip),
-}
-
-if args.expected_kp is not None and args.expected_rv is not None:
-
-    peaks["clip_local"] = find_peak_in_box(
-        snr_map_clip,
-        RV_crop,
-        Kp_crop,
-        expected_kp=args.expected_kp,
-        expected_rv=args.expected_rv,
-        kp_half_width=args.local_kp_half_width,
-        rv_half_width=args.local_rv_half_width,
-    )
-
-    snr_map_outside_box, noise_outside_box = calculate_snr_map_outside_box(
+    snr_map_clip, noise_clip = calculate_snr_map(
         combined_map_crop,
-        RV_crop,
-        Kp_crop,
-        expected_kp=args.expected_kp,
-        expected_rv=args.expected_rv,
-        kp_half_width=args.exclude_kp_half_width,
-        rv_half_width=args.exclude_rv_half_width,
+        sigma_cut=args.sigma_cut,
     )
 
-    noises["outside_box"] = float(noise_outside_box)
+    snr_map_outside_box = None
+    noise_outside_box = None
 
-    peaks["outside_box_global"] = find_peak(
-        snr_map_outside_box,
-        RV_crop,
-        Kp_crop,
-    )
+    peaks = {
+        "clip_global": find_peak(
+            snr_map_clip,
+            RV_crop,
+            Kp_crop,
+        )
+    }
 
-    peaks["outside_box_local"] = find_peak_in_box(
-        snr_map_outside_box,
-        RV_crop,
-        Kp_crop,
-        expected_kp=args.expected_kp,
-        expected_rv=args.expected_rv,
-        kp_half_width=args.local_kp_half_width,
-        rv_half_width=args.local_rv_half_width,
-    )
+    noises = {
+        "clip": float(noise_clip),
+    }
 
-else:
-    peaks["clip_local"] = None
-    peaks["outside_box_global"] = None
-    peaks["outside_box_local"] = None
-    noises["outside_box"] = None
+    if args.expected_kp is not None and args.expected_rv is not None:
 
-if args.plot_snr_method == "outside_box" and snr_map_outside_box is not None:
-    snr_map = snr_map_outside_box
-    peak = peaks["outside_box_global"]
-    local_peak = peaks["outside_box_local"]
-    plot_suffix = "outside-box SNR"
-else:
-    snr_map = snr_map_clip
-    peak = peaks["clip_global"]
-    local_peak = peaks["clip_local"]
-    plot_suffix = "sigma-clipped SNR"
+        peaks["clip_local"] = find_peak_in_box(
+            snr_map_clip,
+            RV_crop,
+            Kp_crop,
+            expected_kp=args.expected_kp,
+            expected_rv=args.expected_rv,
+            kp_half_width=args.local_kp_half_width,
+            rv_half_width=args.local_rv_half_width,
+        )
+
+        snr_map_outside_box, noise_outside_box = calculate_snr_map_outside_box(
+            combined_map_crop,
+            RV_crop,
+            Kp_crop,
+            expected_kp=args.expected_kp,
+            expected_rv=args.expected_rv,
+            kp_half_width=args.exclude_kp_half_width,
+            rv_half_width=args.exclude_rv_half_width,
+        )
+
+        noises["outside_box"] = float(noise_outside_box)
+
+        peaks["outside_box_global"] = find_peak(
+            snr_map_outside_box,
+            RV_crop,
+            Kp_crop,
+        )
+
+        peaks["outside_box_local"] = find_peak_in_box(
+            snr_map_outside_box,
+            RV_crop,
+            Kp_crop,
+            expected_kp=args.expected_kp,
+            expected_rv=args.expected_rv,
+            kp_half_width=args.local_kp_half_width,
+            rv_half_width=args.local_rv_half_width,
+        )
+
+    else:
+        peaks["clip_local"] = None
+        peaks["outside_box_global"] = None
+        peaks["outside_box_local"] = None
+        noises["outside_box"] = None
+
+    if args.plot_snr_method == "outside_box" and snr_map_outside_box is not None:
+        snr_map = snr_map_outside_box
+        peak = peaks["outside_box_global"]
+        local_peak = peaks["outside_box_local"]
+        plot_suffix = "outside-box SNR"
+    else:
+        snr_map = snr_map_clip
+        peak = peaks["clip_global"]
+        local_peak = peaks["clip_local"]
+        plot_suffix = "sigma-clipped SNR"
 
     # print()
     # print("=" * 40)
@@ -716,34 +716,34 @@ else:
     # print(f"Peak Kp   : {peak['kp']:.2f} km/s")
     # print("=" * 40)
     # print()
-print()
-print("=" * 40)
-print("Detection Summary")
-print("=" * 40)
-print(f"Model     : {args.model}")
-print()
-print("Sigma-clipped map:")
-print(f"  Global peak SNR  : {peaks['clip_global']['snr']:.2f}")
-print(f"  Global peak Vsys : {peaks['clip_global']['rv']:.2f} km/s")
-print(f"  Global peak Kp   : {peaks['clip_global']['kp']:.2f} km/s")
-
-if peaks["clip_local"] is not None:
-    print(f"  Local peak SNR   : {peaks['clip_local']['snr']:.2f}")
-    print(f"  Local peak Vsys  : {peaks['clip_local']['rv']:.2f} km/s")
-    print(f"  Local peak Kp    : {peaks['clip_local']['kp']:.2f} km/s")
-
-if peaks["outside_box_global"] is not None:
     print()
-    print("Outside-box map:")
-    print(f"  Global peak SNR  : {peaks['outside_box_global']['snr']:.2f}")
-    print(f"  Global peak Vsys : {peaks['outside_box_global']['rv']:.2f} km/s")
-    print(f"  Global peak Kp   : {peaks['outside_box_global']['kp']:.2f} km/s")
-    print(f"  Local peak SNR   : {peaks['outside_box_local']['snr']:.2f}")
-    print(f"  Local peak Vsys  : {peaks['outside_box_local']['rv']:.2f} km/s")
-    print(f"  Local peak Kp    : {peaks['outside_box_local']['kp']:.2f} km/s")
+    print("=" * 40)
+    print("Detection Summary")
+    print("=" * 40)
+    print(f"Model     : {args.model}")
+    print()
+    print("Sigma-clipped map:")
+    print(f"  Global peak SNR  : {peaks['clip_global']['snr']:.2f}")
+    print(f"  Global peak Vsys : {peaks['clip_global']['rv']:.2f} km/s")
+    print(f"  Global peak Kp   : {peaks['clip_global']['kp']:.2f} km/s")
 
-print("=" * 40)
-print()
+    if peaks["clip_local"] is not None:
+        print(f"  Local peak SNR   : {peaks['clip_local']['snr']:.2f}")
+        print(f"  Local peak Vsys  : {peaks['clip_local']['rv']:.2f} km/s")
+        print(f"  Local peak Kp    : {peaks['clip_local']['kp']:.2f} km/s")
+
+    if peaks["outside_box_global"] is not None:
+        print()
+        print("Outside-box map:")
+        print(f"  Global peak SNR  : {peaks['outside_box_global']['snr']:.2f}")
+        print(f"  Global peak Vsys : {peaks['outside_box_global']['rv']:.2f} km/s")
+        print(f"  Global peak Kp   : {peaks['outside_box_global']['kp']:.2f} km/s")
+        print(f"  Local peak SNR   : {peaks['outside_box_local']['snr']:.2f}")
+        print(f"  Local peak Vsys  : {peaks['outside_box_local']['rv']:.2f} km/s")
+        print(f"  Local peak Kp    : {peaks['outside_box_local']['kp']:.2f} km/s")
+
+    print("=" * 40)
+    print()
 
     if args.save_output:
 
