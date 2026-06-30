@@ -170,18 +170,33 @@ if __name__ == '__main__':
 
 						#idx += 1
 
+					# np.savez_compressed(
+					# 	f"{config.path2reduced}/results/{night}_{camera}_{model}_k{k}_iters.npz",
+					# 	cmap = cmap_results,
+					# 	fmap = fmap_results,
+					# 	orders = orders_to_correlate,
+					# 	k = k,
+					# 	model = model,
+					# 	RV = RV,
+					# 	Kp = Kp,
+					# 	weights = weights,
+					# 	phase_centered = phase_centered
+					# 	)
 					np.savez_compressed(
-						f"{config.path2reduced}/results/{night}_{camera}_{model}_k{k}_iters.npz",
-						cmap = cmap_results,
-						fmap = fmap_results,
-						orders = orders_to_correlate,
-						k = k,
-						model = model,
-						RV = RV,
-						Kp = Kp,
-						weights = weights,
-						phase_centered = phase_centered
-						)
+					    f"{config.path2reduced}/results/{night}_{camera}_{model}_k{k}_iters.npz",
+					    cmap=cmap_results,
+					    fmap=fmap_results,
+					    orders=orders_to_correlate,
+					    k=k,
+					    model=model,
+					    RV=RV,
+					    Kp=Kp,
+					    phase=phase,
+					    phase_centered=phase_centered,
+					    transit_weight=transit_weight,
+					    transit_flux=transit_flux,
+					    transit_stack=args.transit_stack,
+					)
 
 	main()
 
