@@ -126,7 +126,7 @@ if __name__ == '__main__':
 				phase = data_array['phase']
 
 				if args.transit_stack:
-					transit_weight, transit_flux, phase_centered = batman_transit_weights_from_phase(
+					transit_weight, transit_flux, phase_centered = cc.batman_transit_weights_from_phase(
 						phase, params)
 				
 				else:
@@ -163,7 +163,7 @@ if __name__ == '__main__':
 
 						weights = transit_weight if args.transit_stack else None
 						
-						fmap = cc.finalCorr_stack(Kp, RV, cmap, phase, weights)
+						fmap = cc.finalCorr_stack(Kp, RV, cmap, phase, weights = weights)
 								
 						cmap_results[idx] = cmap 
 						fmap_results[idx] = fmap
