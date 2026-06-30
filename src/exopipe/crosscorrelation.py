@@ -2,9 +2,59 @@ from astropy import constants as cs
 from astropy import units as u
 from scipy import interpolate
 import numpy as np 
+import batman
 import sys
 
 from exopipe import tools
+
+def _to_float(x, unit=None):
+    """Return float from either plain number or astropy Quantity."""
+    if hasattr(x, "to_value"):
+        return float(x.to_value(unit)) if unit is not None else float(x.value)
+    return float(x)
+
+
+def batman_transit_weights_from_phase(phase, params):
+    """
+    Use BATMAN to compute a transit light curve from orbital phase.
+
+    phase should be in [0, 1), with phase=0 at mid-transit.
+    Returns:
+        transit_weight = 1 - flux, normalized to max=1
+        transit_flux
+        phase_centered
+    """
+
+    phase_centered = (phase + 0.5) % 1.0 - 0.5
+
+    bp = batman.TransitParams()
+    bp.t0 = 0.0
+    bp.per = 1.0
+
+    # These names may need tiny edits depending on your parameters.py.
+    bp.inc = _to_float(params.inclination, u.deg)
+    bp.rp = float(params.RpRstar)
+    bp.a = float(params.aRRatio)
+
+    bp.ecc = 0.
+    bp.w = 90.
+
+    bp.limb_dark = "quadratic"
+    bp.u = params.u_list
+
+    m = batman.TransitModel(bp, phase_centered)
+    transit_flux = m.light_curve(bp)
+
+    transit_weight = 1.0 - transit_flux
+
+    # Avoid tiny numerical nonzero weights out of transit.
+    transit_weight[transit_weight < 1e-10] = 0.0
+
+    # Normalize so full-transit-ish points have weight ~1.
+    if np.nanmax(transit_weight) > 0:
+        transit_weight = transit_weight / np.nanmax(transit_weight)
+
+    return transit_weight, transit_flux, phase_centered
 
 def weighted_ccf_per_rv(data, ivar, model):
 	"""
@@ -113,27 +163,49 @@ def Vp(kp, phases):
 	# phases: (n_exp_used,)
 	return kp * np.sin(2.0 * np.pi * phases)
 
-def finalCorr_stack(Kp_grid, RV_grid, inCorr, phases, minv=None, maxv=None):
+def finalCorr_stack(Kp_grid, RV_grid, inCorr, phases, minv=None, maxv=None, weights=None):
 	"""
+	Stack per-exposure CCFs into Kp-RV space.
+
 	Kp_grid: (n_kp,) km/s
-	RV_grid: (n_rv,) km/s  (this will be the output RV axis)
+	RV_grid: (n_rv,) km/s, output RV axis
 	inCorr:  (n_exp, n_rv) per-exposure CCF map
 	phases:  (n_exp,) orbital phases for those exposures
+	weights: None or (n_exp,)
+
+	If weights is None:
+		Uses the historical behaviour: unweighted nanmean over exposures.
+
+	If weights is provided:
+		Uses a weighted nanmean over exposures. Exposures with weight <= 0
+		or non-finite weight do not contribute.
 
 	Returns:
-	  fmap: (n_kp, n_rv)
+		fmap: (n_kp, n_rv)
 	"""
+
 	RV_grid = np.asarray(RV_grid, dtype=float)
 	fmap = np.full((len(Kp_grid), len(RV_grid)), np.nan, dtype=float)
 
+	if weights is not None:
+		weights = np.asarray(weights, dtype=float)
+		weights = np.where(np.isfinite(weights) & (weights > 0), weights, 0.0)
+
 	for kdx, kp in enumerate(Kp_grid):
+
 		vp = Vp(kp, phases)  # (n_exp,)
+
 		# shifted x-axis per exposure
-		# Your convention: RV_shifted = RV - vp (matches your earlier code)
-		# This means we "move into planet rest frame" when we interpolate.
+		# Convention: RV_shifted = RV - vp
+		# This means we move into planet rest frame when we interpolate.
 		interp_stack = np.full_like(inCorr, np.nan, dtype=float)
 
 		for edx in range(inCorr.shape[0]):
+
+			# If transit weights are supplied, skip out-of-transit / zero-weight exposures.
+			if weights is not None and weights[edx] <= 0:
+				continue
+
 			x = RV_grid - vp[edx]
 			y = inCorr[edx, :]
 
@@ -147,10 +219,29 @@ def finalCorr_stack(Kp_grid, RV_grid, inCorr, phases, minv=None, maxv=None):
 			xs = xs[s]
 			ys = ys[s]
 
-			f = interpolate.interp1d(xs, ys, bounds_error=False, fill_value=np.nan)
+			f = interpolate.interp1d(
+				xs,
+				ys,
+				bounds_error=False,
+				fill_value=np.nan,
+			)
+
 			interp_stack[edx, :] = f(RV_grid)
 
-		fmap[kdx, :] = np.nanmean(interp_stack, axis=0)
+		if weights is None:
+			# Historical emission behaviour.
+			fmap[kdx, :] = np.nanmean(interp_stack, axis=0)
+
+		else:
+			# Transit-weighted version.
+			w = weights[:, None]
+			finite = np.isfinite(interp_stack)
+
+			numerator = np.nansum(interp_stack * w, axis=0)
+			denominator = np.nansum(w * finite, axis=0)
+
+			fmap[kdx, :] = numerator / denominator
+
 	return fmap
 
 
