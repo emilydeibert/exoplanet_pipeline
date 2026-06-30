@@ -91,11 +91,14 @@ def load_and_combine_maps(
     nights: list,
     cameras: list,
     orders=None):
-
+    
     combined_maps = []
+    
+    if len(iters) != len(nights):
+        iters*= len(nights)
 
     for camera in cameras:
-
+        
         for night, iter in zip(nights, iters):
 
             filename = (
