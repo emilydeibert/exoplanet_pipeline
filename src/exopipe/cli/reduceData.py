@@ -161,7 +161,7 @@ if __name__ == '__main__':
 				wave = data_array['wave']
 				berv = data_array['berv']
 				airmass = data_array['airmass']
-				bjd = data_array['bjd'],
+				bjd = data_array['bjd']
 				bjd_scale = data_array['bjd_scale']
 
 
