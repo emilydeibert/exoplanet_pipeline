@@ -18,7 +18,7 @@ parser.add_argument(
 
 parser.add_argument(
     "--iters",
-    type=int,
+    nargs="+",
     required=True,
 )
 
@@ -41,6 +41,12 @@ parser.add_argument(
     nargs="+",
     default=None,
     help="Cameras to include (default: config.camera)"
+)
+
+parser.add_argument(
+    "--cmap",
+    type=str,
+    default="viridis",
 )
 
 parser.add_argument(
@@ -78,22 +84,23 @@ params_spec = importlib.util.spec_from_file_location("parameters", str(params_fi
 params = importlib.util.module_from_spec(params_spec)
 params_spec.loader.exec_module(params)
 
+
 def load_and_combine_maps(
-    model,
-    iters,
-    nights,
-    cameras,
+    model: str,
+    iters: list,
+    nights: list,
+    cameras: list,
     orders=None):
 
     combined_maps = []
 
     for camera in cameras:
 
-        for night in nights:
+        for night, iter in zip(nights, iters):
 
             filename = (
                 f"{config.path2reduced}/results/"
-                f"{night}_{camera}_{model}_k{iters}_iters.npz"
+                f"{night}_{camera}_{model}_k{iter}_iters.npz"
             )
 
             data = np.load(filename)
@@ -157,7 +164,6 @@ def find_peak(
 def plot_detection(RV, Kp, snr_map, peak, savefile = None):
 
     fig = plt.figure(figsize=(8, 7))
-
     # -----------------------------------------
     # Main map
     # -----------------------------------------
@@ -170,6 +176,7 @@ def plot_detection(RV, Kp, snr_map, peak, savefile = None):
         Kp,
         snr_map,
         shading="auto",
+        cmap=args.cmap,
         vmin=-vmax,
         vmax=vmax,
     )
