@@ -55,6 +55,16 @@ if __name__ == '__main__':
     action="store_true",
     help="Use BATMAN transit weights when stacking CCFs into Kp-RV space."
 )
+	parser.add_argument(
+    "--model-dir",
+    default=None,
+    help="Directory containing *_model.npy files. Default: config.path2models."
+)
+parser.add_argument(
+    "--output-tag",
+    default="",
+    help="Optional tag appended to output files, e.g. transmission or emission."
+)
 
 	args = parser.parse_args()
 
@@ -94,7 +104,9 @@ if __name__ == '__main__':
 
 		print(model)
 
-		mdl = np.load(config.path2models+model+'_model.npy', allow_pickle=True)
+		model_dir = Path(args.model_dir) if args.model_dir is not None else Path(config.path2models)
+		mdl = np.load(model_dir / f"{model}_model.npy", allow_pickle=True)
+		#mdl = np.load(config.path2models+model+'_model.npy', allow_pickle=True)
 		model_flux = mdl[:,1]
 		model_wvl = mdl[:,0] / 10.
 
@@ -182,8 +194,10 @@ if __name__ == '__main__':
 					# 	weights = weights,
 					# 	phase_centered = phase_centered
 					# 	)
+					tag = f"_{args.output_tag}" if args.output_tag else ""
+					
 					np.savez_compressed(
-					    f"{config.path2reduced}/results/{night}_{camera}_{model}_k{k}_iters.npz",
+					    f"{config.path2reduced}/results/{night}_{camera}_{model}_k{k}_iters{tag}.npz",
 					    cmap=cmap_results,
 					    fmap=fmap_results,
 					    orders=orders_to_correlate,
@@ -196,6 +210,8 @@ if __name__ == '__main__':
 					    transit_weight=transit_weight,
 					    transit_flux=transit_flux,
 					    transit_stack=args.transit_stack,
+					    model_dir=str(model_dir),
+					    output_tag=args.output_tag,
 					)
 
 	main()
