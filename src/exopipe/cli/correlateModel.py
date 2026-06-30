@@ -50,6 +50,11 @@ if __name__ == '__main__':
 	parser.add_argument("--model", type=str, nargs='+') # e.g. ["Fe"] or ["Fe", "Mg"], etc.
 	parser.add_argument("--night", type=str, nargs='+') # e.g. ["20240528"]
 	parser.add_argument("--camera", type=str, nargs='+') # e.g. ["blue"]
+	parser.add_argument(
+    "--transit-stack",
+    action="store_true",
+    help="Use BATMAN transit weights when stacking CCFs into Kp-RV space."
+)
 
 	args = parser.parse_args()
 
@@ -120,6 +125,15 @@ if __name__ == '__main__':
 				Vsys = params.Vsys * np.ones_like(berv)
 				phase = data_array['phase']
 
+				if args.transit_stack:
+					transit_weight, transit_flux, phase_centered = batman_transit_weights_from_phase(
+						phase, params)
+				
+				else:
+					transit_weight = np.ones_like(phase, dtype=float)
+					transit_flux = np.ones_like(phase, dtype=float)
+					phase_centered = (phase + 0.5) % 1.0 - 0.5
+
 				orders_to_correlate = tools.orders2keep(wave, 0.000001, mdl)
 
 				for k in k_list:
@@ -147,7 +161,9 @@ if __name__ == '__main__':
 						F_model=F_model
 						)
 
-						fmap = cc.finalCorr_stack(Kp, RV, cmap, phase)
+						weights = transit_weight if args.transit_stack else None
+						
+						fmap = cc.finalCorr_stack(Kp, RV, cmap, phase, weights)
 								
 						cmap_results[idx] = cmap 
 						fmap_results[idx] = fmap
@@ -162,7 +178,9 @@ if __name__ == '__main__':
 						k = k,
 						model = model,
 						RV = RV,
-						Kp = Kp
+						Kp = Kp,
+						weights = weights,
+						phase_centered = phase_centered
 						)
 
 	main()
