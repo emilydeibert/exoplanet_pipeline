@@ -81,9 +81,9 @@ if __name__ == '__main__':
 	Kp = config.Kp 
 	#models = config.models
 	#nights = config.nights
-	models = args.model
-	nights = args.night
-	cameras = args.camera
+	models = args.model if args.model else config.models
+	nights = args.night if args.night else config.nights
+	cameras = args.camera if args.camera else config.camera
 
 	for model in models:
 
@@ -102,7 +102,7 @@ if __name__ == '__main__':
 		for ndx, night in enumerate(nights):
 			print(night)
 
-			for camera in config.camera:
+			for camera in cameras:
 				print(camera)
 
 				# if camera == 'red':
