@@ -54,17 +54,17 @@ if __name__ == '__main__':
     "--transit-stack",
     action="store_true",
     help="Use BATMAN transit weights when stacking CCFs into Kp-RV space."
-)
+	)
 	parser.add_argument(
     "--model-dir",
     default=None,
     help="Directory containing *_model.npy files. Default: config.path2models."
-)
-parser.add_argument(
-    "--output-tag",
-    default="",
-    help="Optional tag appended to output files, e.g. transmission or emission."
-)
+	)
+	parser.add_argument(
+	    "--output-tag",
+	    default="",
+	    help="Optional tag appended to output files, e.g. transmission or emission."
+	)
 
 	args = parser.parse_args()
 
