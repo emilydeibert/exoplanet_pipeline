@@ -98,6 +98,19 @@ parser.add_argument(
     default=True,
 )
 
+parser.add_argument(
+    "--result-tag",
+    default="",
+    help="Optional tag in result filenames, e.g. transmission_T2700 or emission."
+)
+
+parser.add_argument(
+    "--map-sign",
+    type=float,
+    default=-1.0,
+    help="Factor applied after summing orders. Default -1 preserves emission behavior."
+)
+
 # parser.add_argument(
 #     "--save-plot",
 #     default=None,
@@ -127,6 +140,9 @@ def load_and_combine_maps(
     nights,
     cameras,
     orders=None,
+    result_tag="",
+    map_sign=-1.0,
+    iters_override=None,
 ):
     combined_maps = []
 
@@ -141,11 +157,17 @@ def load_and_combine_maps(
 
         for night in nights:
 
-            iters = config.optimumSysremIters[f"{night}_{camera}"]
-
+            iters = (
+                iters_override
+                if iters_override is not None
+                else config.optimumSysremIters[f"{night}_{camera}"]
+            )
+            
+            tag = f"_{result_tag}" if result_tag else ""
+            
             filename = (
                 f"{config.path2reduced}/results/"
-                f"{night}_{camera}_{model}_k{iters}_iters.npz"
+                f"{night}_{camera}_{model}_k{iters}_iters{tag}.npz"
             )
 
             data = np.load(filename)
@@ -191,7 +213,7 @@ def load_and_combine_maps(
             )
 
             order_sum = np.nansum(fmap[keep_idx], axis=0)
-            order_sum *= -1.0
+            order_sum *= map_sign
 
             combined_maps.append(order_sum)
 
@@ -611,10 +633,12 @@ def main():
 
     combined_map = load_and_combine_maps(
         model=args.model,
-        #iters=args.iters,
         nights=nights,
         cameras=cameras,
         orders=args.orders,
+        result_tag=args.result_tag,
+        map_sign=args.map_sign,
+        iters_override=args.iters,
     )
 
     # snr_map, noise = calculate_snr_map(
@@ -749,7 +773,8 @@ def main():
 
         night_str = "_".join([str(n) for n in nights])
         cam_str = "_".join([str(c) for c in cameras])
-        savename = f"{config.path2reduced}/results/{args.model}_{night_str}_{cam_str}_final_result"
+        tag = f"_{args.result_tag}" if args.result_tag else ""
+        savename = f"{config.path2reduced}/results/{args.model}_{night_str}_{cam_str}{tag}_final_result"
 
     # plot_detection(
     #     RV_crop,
