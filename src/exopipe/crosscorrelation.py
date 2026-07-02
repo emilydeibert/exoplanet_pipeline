@@ -7,6 +7,7 @@ import sys
 
 from exopipe import tools
 
+####### DEFINE FUNCTIONS ######
 def _to_float(x, unit=None):
     """Return float from either plain number or astropy Quantity."""
     if hasattr(x, "to_value"):
@@ -30,9 +31,7 @@ def batman_transit_weights_from_phase(phase, params):
     bp = batman.TransitParams()
     bp.t0 = 0.0
     bp.per = 1.0
-
-    # These names may need tiny edits depending on your parameters.py.
-    bp.inc = _to_float(params.inclination, u.deg)
+    bp.inc = float(params.inclination)
     bp.rp = float(params.RpRstar)
     bp.a = float(params.aRRatio)
 
@@ -46,15 +45,13 @@ def batman_transit_weights_from_phase(phase, params):
     transit_flux = m.light_curve(bp)
 
     transit_weight = 1.0 - transit_flux
-
-    # Avoid tiny numerical nonzero weights out of transit.
     transit_weight[transit_weight < 1e-10] = 0.0
 
-    # Normalize so full-transit-ish points have weight ~1.
     if np.nanmax(transit_weight) > 0:
         transit_weight = transit_weight / np.nanmax(transit_weight)
 
     return transit_weight, transit_flux, phase_centered
+
 
 def weighted_ccf_per_rv(data, ivar, model):
 	"""
@@ -74,14 +71,13 @@ def weighted_ccf_per_rv(data, ivar, model):
 	d = np.where(m, data, 0.0)
 	t = np.where(np.isfinite(model), model, 0.0)[None, :]
 
-	# (optional but recommended) remove weighted mean per exposure
+	# remove weighted mean per exposure
 	wsum = np.sum(w, axis=1, keepdims=True)
 	dmean = np.where(wsum > 0, np.sum(w * d, axis=1, keepdims=True) / wsum, 0.0)
 	d = d - dmean
 
 	# model mean (weighted global) — usually already ~0; keep stable:
-	twsum = np.sum(w, axis=0, keepdims=True)
-	# (we won't per-exposure recenter model; not needed)
+	#twsum = np.sum(w, axis=0, keepdims=True)
 
 	num = np.sum(w * d * t, axis=1)
 
@@ -119,11 +115,11 @@ def modelCorrelation_weighted(order_data, order_wave, order_sigmag, RV, wavMinMa
 		lam_rest = order_wave[wav_idx] / (1.0 + (v * u.km/u.s / cs.c).decompose().value)
 		model = F_model(lam_rest)
 
-		# model standardization helps a lot (optional but recommended)
+		# subtract mean
 		mm = np.array(model, dtype=float)
 		m = np.isfinite(mm)
-		if m.sum() < 10:
-			continue
+		#if m.sum() < 10:
+		#	continue
 		mm = mm - np.nanmean(mm[m])
 		s = np.nanstd(mm[m])
 		if s > 0:
@@ -132,6 +128,7 @@ def modelCorrelation_weighted(order_data, order_wave, order_sigmag, RV, wavMinMa
 		cmap[:, vdx] = weighted_ccf_per_rv(data, ivar, mm)
 
 	return cmap
+
 
 def template_to_dmag(template_flux, mode="depth"):
 	"""
@@ -148,20 +145,20 @@ def template_to_dmag(template_flux, mode="depth"):
 		dmag = 1.0857362047581296 * tf
 	elif mode == "transmission":
 		# template is transmission (around 1); convert to mag residual
-		# guard: clip to avoid log of <=0
+		# clip to avoid log of <=0
 		tfc = np.clip(tf, 1e-10, None)
 		dmag = -2.5 * np.log10(tfc)
 		dmag -= np.nanmean(dmag)
-	else:
-		raise ValueError("mode must be 'depth' or 'transmission'")
 
-	dmag -= np.nanmean(dmag)
+	dmag = dmag -  np.nanmean(dmag)
+	
 	return dmag
 
 
 def Vp(kp, phases):
 	# phases: (n_exp_used,)
 	return kp * np.sin(2.0 * np.pi * phases)
+
 
 def finalCorr_stack(Kp_grid, RV_grid, inCorr, phases, minv=None, maxv=None, weights=None):
 	"""
@@ -172,13 +169,6 @@ def finalCorr_stack(Kp_grid, RV_grid, inCorr, phases, minv=None, maxv=None, weig
 	inCorr:  (n_exp, n_rv) per-exposure CCF map
 	phases:  (n_exp,) orbital phases for those exposures
 	weights: None or (n_exp,)
-
-	If weights is None:
-		Uses the historical behaviour: unweighted nanmean over exposures.
-
-	If weights is provided:
-		Uses a weighted nanmean over exposures. Exposures with weight <= 0
-		or non-finite weight do not contribute.
 
 	Returns:
 		fmap: (n_kp, n_rv)
@@ -193,7 +183,7 @@ def finalCorr_stack(Kp_grid, RV_grid, inCorr, phases, minv=None, maxv=None, weig
 
 	for kdx, kp in enumerate(Kp_grid):
 
-		vp = Vp(kp, phases)  # (n_exp,)
+		vp = Vp(kp, phases)
 
 		# shifted x-axis per exposure
 		# Convention: RV_shifted = RV - vp
@@ -201,7 +191,6 @@ def finalCorr_stack(Kp_grid, RV_grid, inCorr, phases, minv=None, maxv=None, weig
 		interp_stack = np.full_like(inCorr, np.nan, dtype=float)
 
 		for edx in range(inCorr.shape[0]):
-
 			# If transit weights are supplied, skip out-of-transit / zero-weight exposures.
 			if weights is not None and weights[edx] <= 0:
 				continue
@@ -210,8 +199,8 @@ def finalCorr_stack(Kp_grid, RV_grid, inCorr, phases, minv=None, maxv=None, weig
 			y = inCorr[edx, :]
 
 			m = np.isfinite(x) & np.isfinite(y)
-			if m.sum() < 5:
-				continue
+			#if m.sum() < 5:
+			#	continue
 
 			xs = x[m]
 			ys = y[m]
@@ -229,11 +218,9 @@ def finalCorr_stack(Kp_grid, RV_grid, inCorr, phases, minv=None, maxv=None, weig
 			interp_stack[edx, :] = f(RV_grid)
 
 		if weights is None:
-			# Historical emission behaviour.
 			fmap[kdx, :] = np.nanmean(interp_stack, axis=0)
 
 		else:
-			# Transit-weighted version.
 			w = weights[:, None]
 			finite = np.isfinite(interp_stack)
 
@@ -244,37 +231,6 @@ def finalCorr_stack(Kp_grid, RV_grid, inCorr, phases, minv=None, maxv=None, weig
 
 	return fmap
 
-
-
-
-
-
-
-
-
-
-
-
-# def injectModel(wav, data, orbital, reduce_res, planet_motion, strength = 1.):
-
-# 	planet_signal = np.zeros(np.shape(data))
-
-# 	for odx, o in enumerate(data):
-
-# 		planet_flux_interp = reduce_res(wav[odx][0])
-
-# 	#planet_flux_interp = reduce_res(wav)
-
-# 		for vdx, v in enumerate(planet_motion):
-# 			Dopplerwav = wav[odx][0] * (1 + (v/cs.c).decompose().value)
-# 			F = interpolate.interp1d(Dopplerwav, planet_flux_interp, kind='linear', fill_value=np.nan, bounds_error = False)
-# 			interpModel = F(wav[odx][0])
-# 			planet_signal[odx, vdx,:] = interpModel
-
-# 	injected = data * (1 - strength * planet_signal)
-# 	scale = (1 - strength * planet_signal)
-
-# 	return injected, scale
 
 def injectModel(wav, data, orbital, reduce_res, planet_motion, strength = 1.):
 
