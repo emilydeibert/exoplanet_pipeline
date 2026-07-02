@@ -411,26 +411,26 @@ def plot_detection(
         ax_map.axhline(expected_kp, color="k", linestyle=":", linewidth=1)
         ax_map.axvline(expected_rv, color="k", linestyle=":", linewidth=1)
 
-    ax_map.scatter(
-        peak["rv"],
-        peak["kp"],
-        marker="x",
-        s=60,
-        color="k",
-        linewidths=1.5,
-        label="Global peak",
-    )
+    #ax_map.scatter(
+    #    peak["rv"],
+    #    peak["kp"],
+    #    marker="x",
+    #    s=60,
+    #    color="k",
+    #    linewidths=1.5,
+    #    label="Global peak",
+    #)
 
-    if local_peak is not None:
-        ax_map.scatter(
-            local_peak["rv"],
-            local_peak["kp"],
-            marker="+",
-            s=70,
-            color="k",
-            linewidths=1.5,
-            label="Local peak",
-        )
+    #if local_peak is not None:
+    #    ax_map.scatter(
+    #        local_peak["rv"],
+    #        local_peak["kp"],
+    #        marker="+",
+    #        s=70,
+    #        color="k",
+    #        linewidths=1.5,
+    #        label="Local peak",
+    #    )
 
     ax_rv = fig.add_subplot(221)
     ax_rv.plot(RV, snr_map[peak["kp_idx"], :])
