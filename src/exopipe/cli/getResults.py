@@ -482,6 +482,8 @@ def fit_gaussian_1d(x, y, peak_x, half_width):
             "offset_err": float(offset_err),
             "fit_half_width": float(half_width),
         }
+    except:
+        print('fit failed!')
 
 
 def add_gaussian_fits_to_peak(
