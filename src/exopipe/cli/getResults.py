@@ -544,6 +544,7 @@ def print_gaussian_fit_summary(peak):
         f"{rv_fit['center']:.2f} +/- {rv_fit['center_err']:.2f} km/s"
         f"fwhm: {rv_fit['fwhm']:.2f}"
         f"half width: {rv_fit['fit_half_width']:.2f}"
+        f"sigma: {rv_fit['sigma']:.2f}"
     )
 
     print(
@@ -551,6 +552,7 @@ def print_gaussian_fit_summary(peak):
         f"{kp_fit['center']:.2f} +/- {kp_fit['center_err']:.2f} km/s"
         f"fwhm: {kp_fit['fwhm']:.2f}"
         f"half width: {kp_fit['fit_half_width']:.2f}"
+        f"sigma: {kp_fit['sigma']:.2f}"
     )
 
 
