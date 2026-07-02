@@ -1,6 +1,6 @@
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ sysrem.py ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ #
 # tools for running SYSREM algorithm on clean data
-# by Emily Deibert (upgraded)
+# by Emily Deibert, with help from Abhinav Jindal
 # following Tamuz, Mazeh, & Zucker 2005, MNRAS, 356, 1466
 
 import numpy as np
