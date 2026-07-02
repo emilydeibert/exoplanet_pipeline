@@ -1,4 +1,5 @@
 from astropy.stats import sigma_clip
+from scipy.optimize import curve_fit
 import matplotlib.pyplot as plt
 from pathlib import Path
 import importlib.util
@@ -14,12 +15,14 @@ parser.add_argument("project_path", type=str)
 parser.add_argument(
     "--model",
     required=True,
+    help="Model for which to get results (one at a time)"
 )
 
 parser.add_argument(
     "--iters",
     type=int,
     required=False,
+    help="SYSREM iterations to use (default: config.optimumSysremIters). If a value is provided here, it will be used for ALL nights/cameras indicated."
 )
 
 parser.add_argument(
@@ -27,6 +30,7 @@ parser.add_argument(
     nargs="+",
     type=int,
     default=None,
+    help="Orders to include (default: orders used in the cross-correlation)"
 )
 
 parser.add_argument(
@@ -47,6 +51,7 @@ parser.add_argument(
     "--sigma-cut",
     type=float,
     default=3.0,
+    help="Sigma cut threshold for sigma-clipping SNR method"
 )
 
 parser.add_argument(
@@ -67,12 +72,14 @@ parser.add_argument(
     "--local-kp-half-width",
     type=float,
     default=20.0,
+    help="Box size for exclusion box method, Kp axis"
 )
 
 parser.add_argument(
     "--local-rv-half-width",
     type=float,
     default=10.0,
+    help = "Box size for exclusion box method, RV axis"
 )
 
 parser.add_argument(
@@ -91,11 +98,13 @@ parser.add_argument(
     "--plot-snr-method",
     choices=["clip", "outside_box"],
     default="clip",
+    help = "Calculate SNR via sigma-clipping or exclusion box method."
 )
 
 parser.add_argument(
     "--save-output",
     default=True,
+    help="Whether or not to save the output"
 )
 
 parser.add_argument(
@@ -111,15 +120,19 @@ parser.add_argument(
     help="Factor applied after summing orders. Default -1 preserves emission behavior."
 )
 
-# parser.add_argument(
-#     "--save-plot",
-#     default=None,
-# )
+parser.add_argument(
+    "--fit-rv-half-width",
+    type=float,
+    default=10.0,
+    help="Half-width around the peak RV used for Gaussian fit to RV slice."
+)
 
-# parser.add_argument(
-#     "--save-map",
-#     default=None,
-# )
+parser.add_argument(
+    "--fit-kp-half-width",
+    type=float,
+    default=20.0,
+    help="Half-width around the peak Kp used for Gaussian fit to Kp slice."
+)
 
 args = parser.parse_args()
 
@@ -152,11 +165,11 @@ def load_and_combine_maps(
             cameraDict = config.redCameraDict
         elif camera == "blue":
             cameraDict = config.blueCameraDict
-        else:
-            raise ValueError(f"Unknown camera: {camera}")
 
         for night in nights:
 
+            # default behavoiur is to use the optimum SYSREM iterations listed in config;
+            # but you can also manually input which iteration you want to use
             iters = (
                 iters_override
                 if iters_override is not None
@@ -184,12 +197,12 @@ def load_and_combine_maps(
                 # to original order numbers 0, 1, 2, ...
                 file_orders = np.arange(fmap.shape[0], dtype=int)
 
-            if fmap.shape[0] != len(file_orders):
-                raise ValueError(
-                    f"Order mapping mismatch for {filename}: "
-                    f"fmap has {fmap.shape[0]} order rows but "
-                    f"data['orders'] has length {len(file_orders)}"
-                )
+            # if fmap.shape[0] != len(file_orders):
+            #     raise ValueError(
+            #         f"Order mapping mismatch for {filename}: "
+            #         f"fmap has {fmap.shape[0]} order rows but "
+            #         f"data['orders'] has length {len(file_orders)}"
+            #     )
 
             if orders is None:
                 desired_orders = np.asarray(cameraDict["goodOrders"], dtype=int)
@@ -312,70 +325,6 @@ def find_peak(
         "kp_idx": int(kp_idx),
     }
 
-
-# def plot_detection(RV, Kp, snr_map, peak, savefile = None):
-
-#     fig = plt.figure(figsize=(8, 7))
-
-#     # -----------------------------------------
-#     # Main map
-#     # -----------------------------------------
-#     ax_map = fig.add_subplot(223)
-
-#     vmax = np.nanmax(np.abs(snr_map))
-
-#     im = ax_map.pcolormesh(
-#         RV,
-#         Kp,
-#         snr_map,
-#         shading="auto",
-#         vmin=-vmax,
-#         vmax=vmax,
-#     )
-
-#     ax_map.set_xlabel("Vsys [km/s]")
-#     ax_map.set_ylabel("Kp [km/s]")
-
-#     ax_map.tick_params(axis='both', which='both', labelbottom=True, labelleft=True)
-
-#     # -----------------------------------------
-#     # RV slice (top)
-#     # -----------------------------------------
-#     ax_rv = fig.add_subplot(221)
-
-#     ax_rv.plot(RV, snr_map[peak["kp_idx"], :])
-
-#     ax_rv.set_ylabel("SNR")
-#     ax_rv.set_xticks([])
-#     ax_rv.set_xlim(min(RV), max(RV))
-
-#     # -----------------------------------------
-#     # Kp slice (right)
-#     # -----------------------------------------
-#     ax_kp = fig.add_subplot(224)
-
-#     ax_kp.plot(snr_map[:, peak["rv_idx"]], Kp)
-
-#     ax_kp.set_xlabel("SNR")
-#     ax_kp.set_yticks([])
-#     ax_kp.set_ylim(min(Kp), max(Kp))
-
-#     # -----------------------------------------
-#     # Colorbar (normal, right of map)
-#     # -----------------------------------------
-#     cbar = fig.colorbar(im, ax=ax_map, fraction=0.046, pad=0.04)
-#     cbar.set_label("SNR", rotation=270, labelpad=2)
-
-#     # -----------------------------------------
-#     # Titles
-#     # -----------------------------------------
-#     ax_rv.set_title(f"Kp = {peak['kp']:.1f} km/s")
-#     ax_kp.set_title(f"Vsys = {peak['rv']:.1f} km/s")
-
-#     if savefile is not None:
-#         plt.savefig(savefile, dpi=300, bbox_inches="tight")
-
-#     plt.show()
 def plot_detection(
     RV,
     Kp,
@@ -459,35 +408,143 @@ def plot_detection(
     plt.show()
 
 
-# def save_results(
-#     filename,
-#     combined_map,
-#     snr_map,
-#     peak,
-#     noise,
-#     model,
-#     iters,
-#     orders,
-#     nights,
-#     cameras,
-#     RV,
-#     Kp):
+def gaussian_with_offset(x, amp, center, sigma, offset):
+    return offset + amp * np.exp(-0.5 * ((x - center) / sigma) ** 2)
 
-#     np.savez_compressed(
-#         filename,
-#         combined_map=combined_map,
-#         snr_map=snr_map,
-#         RV=RV,
-#         Kp=Kp,
-#         peak_snr=peak["snr"],
-#         peak_rv=peak["rv"],
-#         peak_kp=peak["kp"],
-#         noise=noise,
-#         model=model,
-#         iters=iters,
-#         orders=orders,
-#         nights=np.array(nights, dtype='str'),
-#         cameras=np.array(cameras, dtype='str'))
+
+def fit_gaussian_1d(x, y, peak_x, half_width):
+    """
+    Fit a Gaussian + constant to a 1D slice near peak_x.
+    """
+
+    fit_mask = (
+        np.isfinite(x)
+        & np.isfinite(y)
+        & (np.abs(x - peak_x) <= half_width)
+    )
+
+    xfit = x[fit_mask]
+    yfit = y[fit_mask]
+
+    # Initial guesses
+    offset0 = np.nanmedian(yfit)
+    amp0 = np.nanmax(yfit) - offset0
+
+    if not np.isfinite(amp0) or amp0 <= 0:
+        amp0 = np.nanstd(yfit)
+
+    if not np.isfinite(amp0) or amp0 <= 0:
+        amp0 = 1.0
+
+    dx = np.nanmedian(np.diff(np.sort(xfit)))
+    
+    if not np.isfinite(dx) or dx <= 0:
+        dx = 1.0
+
+    sigma0 = max(half_width / 3.0, dx)
+
+    p0 = [
+        amp0,
+        peak_x,
+        sigma0,
+        offset0,
+    ]
+
+    bounds = (
+        [0.0, np.nanmin(xfit), dx / 2.0, -np.inf],
+        [np.inf, np.nanmax(xfit), half_width * 2.0, np.inf],
+    )
+
+    try:
+        popt, pcov = curve_fit(
+            gaussian_with_offset,
+            xfit,
+            yfit,
+            p0=p0,
+            bounds=bounds,
+            maxfev=10000,
+        )
+
+        perr = np.sqrt(np.diag(pcov))
+
+        amp, center, sigma, offset = popt
+        amp_err, center_err, sigma_err, offset_err = perr
+
+        return {
+            "amp": float(amp),
+            "amp_err": float(amp_err),
+            "center": float(center),
+            "center_err": float(center_err),
+            "sigma": float(abs(sigma)),
+            "sigma_err": float(sigma_err),
+            "fwhm": float(2.3548 * abs(sigma)),
+            "offset": float(offset),
+            "offset_err": float(offset_err),
+            "fit_half_width": float(half_width),
+        }
+
+
+def add_gaussian_fits_to_peak(
+    peaks,
+    peak_key,
+    snr_map,
+    RV,
+    Kp,
+    rv_half_width=10.0,
+    kp_half_width=20.0,
+):
+    """
+    Add RV-slice and Kp-slice Gaussian fits to one peak entry.
+    """
+
+    peak = peaks.get(peak_key)
+
+    if peak is None or snr_map is None:
+        return
+
+    rv_slice = snr_map[peak["kp_idx"], :]
+    kp_slice = snr_map[:, peak["rv_idx"]]
+
+    rv_fit = fit_gaussian_1d(
+        RV,
+        rv_slice,
+        peak_x=peak["rv"],
+        half_width=rv_half_width,
+    )
+
+    kp_fit = fit_gaussian_1d(
+        Kp,
+        kp_slice,
+        peak_x=peak["kp"],
+        half_width=kp_half_width,
+    )
+
+    peak["gaussian_fit"] = {
+        "rv_slice": rv_fit,
+        "kp_slice": kp_fit,
+    }
+
+
+def print_gaussian_fit_summary(peak):
+    if peak is None:
+        return
+
+    if "gaussian_fit" not in peak:
+        return
+
+    rv_fit = peak["gaussian_fit"]["rv_slice"]
+    kp_fit = peak["gaussian_fit"]["kp_slice"]
+
+    print(
+        f"  RV Gaussian fit  : "
+        f"{rv_fit['center']:.2f} +/- {rv_fit['center_err']:.2f} km/s"
+    )
+
+    print(
+        f"  Kp Gaussian fit  : "
+        f"{kp_fit['center']:.2f} +/- {kp_fit['center_err']:.2f} km/s"
+    )
+
 def save_results(
     filename,
     combined_map,
@@ -508,7 +565,7 @@ def save_results(
     np.savez_compressed(
         filename,
         combined_map=combined_map,
-        snr_map=snr_map,  # backwards-compatible: the plotted/default SNR map
+        snr_map=snr_map,
         snr_map_clip=snr_map_clip,
         snr_map_outside_box=snr_map_outside_box,
         RV=RV,
@@ -523,38 +580,6 @@ def save_results(
     )
 
 
-# def save_summary(
-#     filename,
-#     peak,
-#     noise,
-#     model,
-#     iters,
-#     orders,
-#     nights,
-#     cameras):
-
-#     summary = {
-#         "model": model,
-#         "iters": iters,
-#         "orders": (
-#             None
-#             if orders is None
-#             else list(orders)
-#         ),
-#         "peak_snr": peak["snr"],
-#         "peak_rv": peak["rv"],
-#         "peak_kp": peak["kp"],
-#         "noise": noise,
-#         "nights": list(nights),
-#         "cameras": list(cameras),
-#     }
-
-#     with open(filename, "w") as f:
-#         json.dump(
-#             summary,
-#             f,
-#             indent=4,
-#         )
 def save_summary(
     filename,
     peaks,
@@ -641,16 +666,6 @@ def main():
         iters_override=args.iters,
     )
 
-    # snr_map, noise = calculate_snr_map(
-    #     combined_map[kp_mask][:, rv_mask],
-    #     sigma_cut=args.sigma_cut,
-    # )
-
-    # peak = find_peak(
-    #     snr_map,
-    #     RV_crop,
-    #     Kp_crop,
-    # )
     combined_map_crop = combined_map[kp_mask][:, rv_mask]
 
     snr_map_clip, noise_clip = calculate_snr_map(
@@ -719,6 +734,27 @@ def main():
         peaks["outside_box_local"] = None
         noises["outside_box"] = None
 
+    # Gaussian fits to 1D RV and Kp slices.
+    add_gaussian_fits_to_peak(
+        peaks,
+        "clip_global",
+        snr_map_clip,
+        RV_crop,
+        Kp_crop,
+        rv_half_width=args.fit_rv_half_width,
+        kp_half_width=args.fit_kp_half_width,
+    )
+
+    add_gaussian_fits_to_peak(
+        peaks,
+        "clip_local",
+        snr_map_clip,
+        RV_crop,
+        Kp_crop,
+        rv_half_width=args.fit_rv_half_width,
+        kp_half_width=args.fit_kp_half_width,
+    )
+
     if args.plot_snr_method == "outside_box" and snr_map_outside_box is not None:
         snr_map = snr_map_outside_box
         peak = peaks["outside_box_global"]
@@ -730,16 +766,6 @@ def main():
         local_peak = peaks["clip_local"]
         plot_suffix = "sigma-clipped SNR"
 
-    # print()
-    # print("=" * 40)
-    # print("Detection Summary")
-    # print("=" * 40)
-    # print(f"Model     : {args.model}")
-    # print(f"Peak SNR  : {peak['snr']:.2f}")
-    # print(f"Peak Vsys : {peak['rv']:.2f} km/s")
-    # print(f"Peak Kp   : {peak['kp']:.2f} km/s")
-    # print("=" * 40)
-    # print()
     print()
     print("=" * 40)
     print("Detection Summary")
@@ -750,11 +776,13 @@ def main():
     print(f"  Global peak SNR  : {peaks['clip_global']['snr']:.2f}")
     print(f"  Global peak Vsys : {peaks['clip_global']['rv']:.2f} km/s")
     print(f"  Global peak Kp   : {peaks['clip_global']['kp']:.2f} km/s")
+    print_gaussian_fit_summary(peaks["clip_global"])
 
     if peaks["clip_local"] is not None:
         print(f"  Local peak SNR   : {peaks['clip_local']['snr']:.2f}")
         print(f"  Local peak Vsys  : {peaks['clip_local']['rv']:.2f} km/s")
         print(f"  Local peak Kp    : {peaks['clip_local']['kp']:.2f} km/s")
+        print_gaussian_fit_summary(peaks["clip_local"])
 
     if peaks["outside_box_global"] is not None:
         print()
@@ -776,13 +804,6 @@ def main():
         tag = f"_{args.result_tag}" if args.result_tag else ""
         savename = f"{config.path2reduced}/results/{args.model}_{night_str}_{cam_str}{tag}_final_result"
 
-    # plot_detection(
-    #     RV_crop,
-    #     Kp_crop,
-    #     snr_map,
-    #     peak,
-    #     savefile=savename+'.png',
-    # )
     plot_detection(
         RV_crop,
         Kp_crop,
@@ -797,20 +818,6 @@ def main():
 
     if args.save_output:
 
-        # save_results(
-        #     savename+'.npz',
-        #     combined_map,
-        #     snr_map,
-        #     peak,
-        #     noise,
-        #     args.model,
-        #     args.iters,
-        #     args.orders,
-        #     nights,
-        #     cameras,
-        #     RV_crop,
-        #     Kp_crop
-        # )
         save_results(
             savename + ".npz",
             combined_map_crop,
@@ -832,16 +839,6 @@ def main():
             savename+"_summary.json"
             )
 
-        # save_summary(
-        #     summary_name,
-        #     peak,
-        #     noise,
-        #     args.model,
-        #     args.iters,
-        #     args.orders,
-        #     nights,
-        #     cameras
-        # )
         save_summary(
             summary_name,
             peaks,
